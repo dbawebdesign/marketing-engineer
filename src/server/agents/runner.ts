@@ -14,11 +14,11 @@ async function gather(tx: Tx, agent: AgentRow, tpl: AgentTemplate, input: Record
   const days = Math.min(Math.max(Number(input.lookbackDays ?? spec.lookbackDays) || 7, 1), 365);
   const tenant = await tx.query<{ name: string }>(`select name from tenants limit 1`);
   const sigQ = await tx.query<SignalLite & { metadata: Record<string, unknown> }>(
-    `select id, source, content, title, url, account, occurred_at::text, metadata
+    `select id, source, left(content, 8000) content, title, url, account, occurred_at::text occurred_at, metadata
        from signals
-      where occurred_at > now() - make_interval(days => $1)
+      where signals.occurred_at > now() - make_interval(days => $1)
         and ($2::text[] is null or source = any($2))
-      order by occurred_at desc
+      order by signals.occurred_at desc
       limit 400`,
     [days, tpl.signalSources ?? null],
   );
@@ -79,7 +79,16 @@ export async function metricsDigest(tx: Tx, days: number): Promise<MetricsDigest
 }
 
 /** Execute one queued run end to end. Idempotent: a run that is no longer queued is skipped. */
-export async function executeRun(tenantId: string, runId: string): Promise<void> {
+const RUN_DEADLINE_MS = Number(process.env.ME_RUN_DEADLINE_MS ?? 8 * 60_000);
+
+/** Model/network failures worth another attempt (not refusals or bad output). */
+function retryable(e: unknown) {
+  if (e instanceof AiRefusal) return false;
+  if (e instanceof Error && (e.name === "ZodError" || e instanceof SyntaxError)) return false;
+  return true;
+}
+
+export async function executeRun(tenantId: string, runId: string, opts: { finalAttempt?: boolean; signal?: AbortSignal } = {}): Promise<void> {
   const ctx = systemCtx(tenantId);
   const claimed = await withTenant(tenantId, async (tx) => {
     const r = await tx.query<{ agent_id: string; input: Record<string, unknown> }>(
@@ -121,6 +130,8 @@ export async function executeRun(tenantId: string, runId: string): Promise<void>
         prompt: tpl.prompt(rc),
         schema: tpl.schema,
         effort: tpl.tier === "deep" ? "high" : "medium",
+        // Always finish well inside the stuck-run reaper (30 min); stop at once on shutdown.
+        signal: opts.signal ? AbortSignal.any([AbortSignal.timeout(RUN_DEADLINE_MS), opts.signal]) : AbortSignal.timeout(RUN_DEADLINE_MS),
       });
       data = res.data;
       usage = res.usage;
@@ -129,6 +140,9 @@ export async function executeRun(tenantId: string, runId: string): Promise<void>
     }
     const result = tpl.finalize(data as never, rc);
     await withTenant(tenantId, async (tx) => {
+      // Only a run that is still ours may finish (the reaper may have failed it meanwhile).
+      const own = await tx.query(`select 1 from runs where id = $1 and status = 'running' for update`, [runId]);
+      if (!own.rowCount) return;
       for (const d of result.drafts) {
         await tx.query(
           `insert into drafts(tenant_id, run_id, agent_id, system, type, title, body, payload, evidence) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
@@ -144,10 +158,15 @@ export async function executeRun(tenantId: string, runId: string): Promise<void>
       await audit(tx, { ...ctx, actor: { type: "agent", id: agent.id } }, "run.succeeded", { type: "run", id: runId }, { drafts: result.drafts.length, ...result.stats });
     });
   } catch (e) {
-    const message = e instanceof AiRefusal ? e.message : e instanceof Error ? e.message : "Unknown error";
+    const raw = e instanceof Error ? e.message : "Unknown error";
     console.error(`[run ${runId}] failed`, e);
+    const again = retryable(e) && (opts.signal?.aborted || !opts.finalAttempt);
+    // Tenants see a plain message; provider and database details stay in the server log.
+    const message = e instanceof AiRefusal ? raw : again ? "Retrying after a temporary error" : "The agent couldn't finish this run. It has been logged.";
     await withTenant(tenantId, (tx) =>
-      tx.query(`update runs set status='failed', finished_at=now(), error=$2 where id=$1`, [runId, message.slice(0, 2000)]),
+      again
+        ? tx.query(`update runs set status='queued', started_at=null, error=$2 where id=$1 and status='running'`, [runId, message])
+        : tx.query(`update runs set status='failed', finished_at=now(), error=$2 where id=$1 and status='running'`, [runId, message]),
     );
     throw e;
   }

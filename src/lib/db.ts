@@ -16,9 +16,19 @@ function make(): Pools {
   const sysUrl = process.env.DATABASE_ADMIN_URL ?? appUrl;
   if (!appUrl) throw new Error("DATABASE_URL is not set");
   const max = Number(process.env.DB_POOL_MAX ?? 10);
+  const role = process.env.ME_PROCESS_ROLE ?? "web";
+  // Fail fast instead of hanging when the pool is exhausted or a transaction is left open.
+  // Works with PgBouncer in transaction mode (tenant scope is set per transaction).
+  const common = {
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 15_000,
+    lock_timeout: 5_000,
+    idle_in_transaction_session_timeout: 30_000,
+  };
   return {
-    app: new pg.Pool({ connectionString: appUrl, max, idleTimeoutMillis: 30_000, statement_timeout: 15_000 }),
-    sys: new pg.Pool({ connectionString: sysUrl, max: Math.max(2, Math.floor(max / 2)), idleTimeoutMillis: 30_000, statement_timeout: 15_000 }),
+    app: new pg.Pool({ connectionString: appUrl, max, ...common, application_name: `me-${role}` }),
+    sys: new pg.Pool({ connectionString: sysUrl, max: Math.max(2, Math.floor(max / 2)), ...common, application_name: `me-${role}-sys` }),
   };
 }
 

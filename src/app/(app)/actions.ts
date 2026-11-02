@@ -1,4 +1,5 @@
 "use server";
+import { inlineWorkerEnabled } from "@/lib/inline-worker";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { act, requireCtx } from "@/server/web/session";
@@ -13,7 +14,7 @@ import { badRequest } from "@/lib/errors";
 
 /** Single-box deployments run queued jobs right after the response; a separate worker also drains the queue. */
 function kickWorker() {
-  if (process.env.ME_INLINE_WORKER === "false") return;
+  if (!inlineWorkerEnabled()) return;
   after(async () => {
     try {
       await drain(`inline:${process.pid}`, 5);

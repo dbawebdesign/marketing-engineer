@@ -1,3 +1,4 @@
+import { inlineWorkerEnabled } from "@/lib/inline-worker";
 import { after } from "next/server";
 import { z } from "zod";
 import { handler, readJson } from "@/lib/api";
@@ -21,7 +22,7 @@ export const POST = handler<{ id: string }>(async (req, ctx, { params }) => {
   const body = hasBody ? await readJson(req, Body, 100_000) : { input: {} };
   const runId = await runAgent(ctx, params.id, body.input, "api");
   // Single-box deployments: process the queue right after responding, no separate worker needed.
-  if (process.env.ME_INLINE_WORKER !== "false") {
+  if (inlineWorkerEnabled()) {
     after(async () => {
       try {
         await drain(`inline:${process.pid}`, 5);

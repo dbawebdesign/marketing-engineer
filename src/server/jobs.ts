@@ -33,7 +33,7 @@ async function claimOne(workerId: string): Promise<Job | null> {
   const r = await sys<Job>(
     `update jobs set status='running', locked_at=now(), locked_by=$1, attempts=attempts+1
       where id = (select j.id from jobs j
-                   where j.status='queued' and j.run_at <= now()
+                   where j.status='queued' and j.run_at <= now() and j.attempts < j.max_attempts
                      -- per-tenant concurrency cap, so one busy tenant can never starve the rest
                      and (select count(*) from jobs r where r.tenant_id = j.tenant_id and r.status = 'running') < $2
                    order by j.run_at limit 1 for update skip locked)
@@ -59,7 +59,25 @@ export async function fail(job: Job, err: unknown) {
 
 /** Re-queue jobs whose worker died mid-flight. */
 export async function requeueStale() {
-  await sys(`update jobs set status='queued', locked_at=null where status='running' and locked_at < now() - interval '35 minutes'`);
+  // A job whose worker died is retried until it runs out of attempts (so a job that crashes
+  // the process can't loop forever).
+  await sys(
+    `update jobs set status = case when attempts >= max_attempts then 'failed' else 'queued' end,
+            last_error = coalesce(last_error, 'Worker stopped while running this job'), locked_at = null
+      where status = 'running' and locked_at < now() - interval '35 minutes'`,
+  );
+}
+
+/** Give a job back to the queue without spending an attempt (graceful shutdown). */
+export async function release(id: string) {
+  await sys(`update jobs set status='queued', locked_at=null, locked_by=null, attempts=greatest(attempts-1,0) where id=$1 and status='running'`, [id]);
+}
+
+/** Retention: keep the hot tables small. Runs in small batches from the worker. */
+export async function sweep() {
+  await sys(`delete from jobs where id in (select id from jobs where status in ('done','failed') and created_at < now() - interval '7 days' limit 5000)`);
+  await sys(`delete from sessions where id_hash in (select id_hash from sessions where expires_at < now() limit 5000)`);
+  await sys(`delete from embed_token_uses where ctid in (select ctid from embed_token_uses where used_at < now() - interval '2 hours' limit 5000)`);
 }
 
 const TENANT_CONCURRENCY = Math.max(1, Number(process.env.ME_TENANT_CONCURRENCY ?? "2") || 2);

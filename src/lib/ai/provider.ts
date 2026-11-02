@@ -25,6 +25,7 @@ export type GenerateArgs<S extends z.ZodType> = {
   schema: S;
   effort?: "low" | "medium" | "high";
   maxTokens?: number;
+  signal?: AbortSignal;
 };
 
 export class AiRefusal extends Error {}
@@ -38,7 +39,7 @@ export const aiEnabled = () => Boolean(process.env.ANTHROPIC_API_KEY || process.
  * The stable part of the prompt (system) is cached; the volatile context goes in the user turn.
  */
 export async function generate<S extends z.ZodType>(args: GenerateArgs<S>): Promise<{ data: z.infer<S>; usage: Usage }> {
-  client ??= new Anthropic({ maxRetries: 3, timeout: 10 * 60 * 1000 });
+  client ??= new Anthropic({ maxRetries: 2, timeout: 5 * 60 * 1000 });
   const stream = client.messages.stream({
     model: args.model,
     max_tokens: args.maxTokens ?? 32000,
@@ -46,7 +47,7 @@ export async function generate<S extends z.ZodType>(args: GenerateArgs<S>): Prom
     output_config: { effort: args.effort ?? "medium", format: zodOutputFormat(args.schema) },
     system: [{ type: "text", text: args.system, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: args.prompt }],
-  });
+  }, args.signal ? { signal: args.signal } : undefined);
   const msg = await stream.finalMessage();
   if (msg.stop_reason === "refusal") throw new AiRefusal("The model declined this request.");
   if (msg.stop_reason === "max_tokens") throw new Error("The model ran out of output room. Narrow the inputs and retry.");

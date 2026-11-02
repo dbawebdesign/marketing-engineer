@@ -30,6 +30,11 @@ services:
   worker:
     build: .
     command: ["node_modules/.bin/tsx", "src/worker/index.ts"]
+    # No HTTP server in the worker: healthy while its heartbeat file is fresh.
+    healthcheck:
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /tmp/me-worker-heartbeat) )) -lt 60"]
+      interval: 30s
+      timeout: 5s
     env_file: [{ path: .env.docker, required: false }]
     environment: *env
     depends_on: { migrate: { condition: service_completed_successfully } }
