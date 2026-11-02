@@ -26,8 +26,9 @@ export async function searchAll(ctx: Ctx, raw: string): Promise<SearchResults> {
       [p],
     );
     const signals = await tx.query<SearchResults["signals"][number]>(
-      `select id, title, left(content, 400) as content, source, account from signals
-        where content ilike $1 or title ilike $1 or account ilike $1 order by occurred_at desc limit 5`,
+      // Indexed search (trigram) through a tenant-filtered function; see migration 009.
+      `select s.id, s.title, left(s.content, 400) as content, s.source, s.account
+         from search_signal_ids($1, 5) f join signals s on s.id = f.id order by s.occurred_at desc`,
       [p],
     );
     const docs = await tx.query<SearchResults["docs"][number]>(`select key, title, folder from memory_docs where title ilike $1 order by title limit 5`, [p]);
