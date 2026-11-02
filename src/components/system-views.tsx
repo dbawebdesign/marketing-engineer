@@ -9,6 +9,7 @@ import { DemoButton } from "./demo-button";
 import { RunButton } from "./run-button";
 import { ExperimentActions } from "./experiment-actions";
 import { metaOf } from "@/lib/draft-meta";
+import { fmtScore } from "@/lib/experiment-results";
 import { Badge, Dot, buttonClass, cx, plural, timeAgo } from "./ui";
 
 /* ------------------------------------------------------------------ shared */
@@ -61,10 +62,25 @@ export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[
   const types = new Set(drafts.map((d) => d.type));
   const noun = types.size === 1 ? (NOUN[drafts[0]!.type] ?? ["draft"]) : (["draft"] as [string]);
   const first = drafts[0]!;
+  const href = drafts.length === 1 ? systemInboxHref(slug, first) : systemInboxHref(slug);
+  // With a preview, the card is the one way in: its own status line and Review button, no second row above it.
+  if (preview)
+    return (
+      <section className="mb-12" data-pending-block>
+        <DraftPreview
+          title={first.title}
+          body={first.body}
+          meta={metaOf(first.payload)}
+          createdAt={first.created_at}
+          href={systemInboxHref(slug, first)}
+          label={drafts.length > 1 ? `${plural(drafts.length, noun[0], noun[1])} waiting · next up` : "Waiting for your review"}
+        />
+      </section>
+    );
   return (
     <section className="mb-12" data-pending-block>
       <L
-        href={drafts.length === 1 ? systemInboxHref(slug, first) : systemInboxHref(slug)}
+        href={href}
         className="group flex items-center gap-3 rounded-xl bg-warn-soft/60 px-4 py-2.5 text-[14px] text-ink transition-colors hover:bg-warn-soft"
       >
         <Dot tone="warn" />
@@ -75,19 +91,6 @@ export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[
           Review <ArrowRight size={14} aria-hidden />
         </span>
       </L>
-      {preview ? (
-        <div className="mt-3">
-          <DraftPreview
-            title={first.title}
-            body={first.body}
-            meta={metaOf(first.payload)}
-            createdAt={first.created_at}
-            href={systemInboxHref(slug, first)}
-            label={drafts.length > 1 ? "Next up" : undefined}
-            quiet
-          />
-        </div>
-      ) : null}
     </section>
   );
 }
@@ -338,6 +341,53 @@ const EXP_ORDER = ["running", "draft", "won", "lost"];
 const rank = (s: string) => (EXP_ORDER.includes(s) ? EXP_ORDER.indexOf(s) : 99);
 const EXP_LABEL: Record<string, string> = { running: "Running", draft: "Not started", won: "Won", lost: "Lost" };
 
+/** The angle a queued test is about: what Hook lab writes hooks for. */
+const testAngle = (e: Experiment) => {
+  const v = e.variants[0];
+  return (v?.angle ?? v?.label ?? "").trim() || (e.hypothesis ? `${e.name}: ${e.hypothesis}` : e.name);
+};
+
+/** The deciding metric per arm, leader first. Quiet when nothing's been measured yet. */
+function ExperimentResults({ e }: { e: Experiment }) {
+  const r = e.results;
+  if (!r) return null;
+  const arms = [...r.arms].sort((a, b) => (b.score ?? -1) - (a.score ?? -1) || b.clicks - a.clicks);
+  const max = Math.max(...arms.map((a) => a.score ?? 0)) || 1;
+  if (!r.measured)
+    return (
+      <p className="mt-2 text-[13px] text-ink-3" data-experiment-results>
+        No results yet. Decided by {r.unit}, from metric events tagged with{" "}
+        <span className="text-ink-2">{arms.map((a) => a.label).join(" · ")}</span>
+      </p>
+    );
+  return (
+    <div className="mt-3 max-w-xl" data-experiment-results>
+      <p className="mb-1.5 text-[12.5px] text-ink-3">Decided by {r.unit}</p>
+      <ul className="space-y-1.5">
+        {arms.map((a) => {
+          const lead = r.leader?.key === a.key;
+          return (
+            <li key={a.key} className="grid grid-cols-[minmax(0,1fr)_44px] items-center gap-x-3 gap-y-1 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)_44px]">
+              <span className={cx("truncate text-[13px]", lead ? "font-medium text-ink" : "text-ink-2")} title={`${a.label} · ${plural(a.variants.length, "variant")}`}>
+                {a.label}
+              </span>
+              <span className="order-3 col-span-2 h-1.5 overflow-hidden rounded-full bg-line sm:order-none sm:col-span-1" aria-hidden>
+                <span className={cx("block h-full rounded-full", lead ? "bg-accent" : "bg-ink-3/50")} style={{ width: `${a.score ? Math.max((a.score / max) * 100, 2) : 0}%` }} />
+              </span>
+              <span className="text-right text-[13px] tnum" title={`${plural(a.clicks, "click")}${r.kind !== "click" ? ` · ${a.hits} ${r.kind.replace(/_/g, " ")}` : ""}`}>
+                {fmtScore(a.score, r.kind)}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      <p className="mt-1.5 text-[12.5px] text-ink-3 tnum">
+        {plural(arms.reduce((n, a) => n + a.clicks, 0), "click")} {e.status === "running" ? "since it started" : "while it ran"}
+      </p>
+    </div>
+  );
+}
+
 export function ExperimentBoard({
   experiments,
   hookLab,
@@ -375,12 +425,16 @@ export function ExperimentBoard({
               <div className="min-w-0">
                 <p className="text-[14px] font-medium">{e.name}</p>
                 {e.hypothesis ? <p className="mt-0.5 line-clamp-2 text-[13px] text-ink-2">{e.hypothesis}</p> : null}
+                <ExperimentResults e={e} />
                 {(canWrite || (canRun && hookLab)) && (e.status === "draft" || e.status === "running") ? (
                   <ExperimentActions
                     id={e.id}
+                    name={e.name}
                     status={e.status}
+                    variants={e.variants.length}
+                    results={e.results}
                     canWrite={canWrite}
-                    hookLab={canRun && hookLab ? { id: hookLab.id, name: hookLab.name, offer: e.hypothesis ? `${e.name}: ${e.hypothesis}` : e.name } : null}
+                    hookLab={canRun && hookLab && e.status === "draft" ? { id: hookLab.id, name: hookLab.name, offer: testAngle(e) } : null}
                   />
                 ) : null}
               </div>
@@ -404,14 +458,18 @@ export function CreativeBatch({ draft }: { draft: Draft | undefined }) {
   const angles = p.angles ?? [];
   if (!angles.length) return null;
   // The waiting line above already says it's pending; here it's just a way in.
-  const status = draft.status === "pending" ? "Open in Inbox" : draft.status === "rejected" ? "Rejected" : "Running as an experiment";
+  const status = draft.status === "pending" ? "Pending review" : draft.status === "rejected" ? "Rejected" : "Running as an experiment";
   return (
     <Block
       title="Latest batch"
       meta={
-        <L href={inboxHref(draft)} className="hover:text-ink">
-          {status} · {timeAgo(draft.created_at)}
-        </L>
+        draft.status === "pending" ? (
+          <span>{status} · {timeAgo(draft.created_at)}</span>
+        ) : (
+          <L href={inboxHref(draft)} className="hover:text-ink">
+            {status} · {timeAgo(draft.created_at)}
+          </L>
+        )
       }
     >
       {p.offer ? <p className="mb-4 max-w-2xl text-[14px] text-ink-2"><span className="font-medium text-ink">{p.offer.split(":")[0]}.</span> {p.hypothesis}</p> : null}
@@ -433,8 +491,13 @@ export function CreativeBatch({ draft }: { draft: Draft | undefined }) {
       </ol>
       {p.ads?.length ? (
         <p className="mt-3 text-[13px] text-ink-3">
-          Plus {plural(p.ads.length, "ad concept")} in the full batch.{" "}
-          <L href={inboxHref(draft)} className="text-ink-2 underline-offset-2 hover:underline">Open it</L>
+          Plus {plural(p.ads.length, "ad concept")} in the full batch.
+          {draft.status !== "pending" ? (
+            <>
+              {" "}
+              <L href={inboxHref(draft)} className="text-ink-2 underline-offset-2 hover:underline">Open it</L>
+            </>
+          ) : null}
         </p>
       ) : null}
     </Block>
@@ -446,8 +509,15 @@ export function CreativeBatch({ draft }: { draft: Draft | undefined }) {
 type Q = { question: string; status: "covered" | "partial" | "missing"; answer?: string; missing_facts?: string[]; placement?: string };
 const COV = { covered: { label: "Covered", tone: "accent" }, partial: { label: "Partial", tone: "warn" }, missing: { label: "Missing", tone: "danger" } } as const;
 
-export function Coverage({ draft }: { draft: Draft | undefined }) {
-  const qs = ((draft?.payload as { questions?: Q[] } | undefined)?.questions ?? []).filter((q) => q.question);
+const questionsOf = (d: Draft | undefined) => ((d?.payload as { questions?: Q[] } | undefined)?.questions ?? []).filter((q) => q.question);
+
+/**
+ * Fact coverage: how many buyer questions the *approved* answer pack can answer. A pack still
+ * waiting for review doesn't count until someone approves it; it shows as pending review.
+ */
+export function Coverage({ approved, pending }: { approved: Draft | undefined; pending: Draft | undefined }) {
+  const draft = approved ?? pending;
+  const qs = questionsOf(draft);
   if (!draft || !qs.length)
     return (
       <Block title="Coverage">
@@ -456,22 +526,28 @@ export function Coverage({ draft }: { draft: Draft | undefined }) {
     );
   const n = { covered: 0, partial: 0, missing: 0 };
   for (const q of qs) n[q.status] = (n[q.status] ?? 0) + 1;
-  const score = Math.round(((n.covered + 0.5 * n.partial) / qs.length) * 100);
+  const counted = !!approved;
+  const score = counted ? Math.round(((n.covered + 0.5 * n.partial) / qs.length) * 100) : null;
   const order = { missing: 0, partial: 1, covered: 2 } as const;
   const sorted = [...qs].sort((a, b) => order[a.status] - order[b.status]);
   return (
     <>
       <section className={cx(card, "mb-12 grid gap-6 p-6 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-10 sm:p-8")}>
         <div>
-          <p className="text-[52px] font-semibold leading-none tracking-[-0.03em] tnum">
-            {score}
-            <span className="text-[28px] text-ink-3">%</span>
-          </p>
-          <p className="mt-2 text-[13px] text-ink-3">Visibility score</p>
+          {score !== null ? (
+            <p className="text-[52px] font-semibold leading-none tracking-[-0.03em] tnum">
+              {score}
+              <span className="text-[28px] text-ink-3">%</span>
+            </p>
+          ) : (
+            <p className="text-[52px] font-semibold leading-none tracking-[-0.03em] text-ink-3" aria-label="Not counted yet">—</p>
+          )}
+          <p className="mt-2 text-[13px] text-ink-3">Fact coverage</p>
         </div>
         <div>
           <p className="max-w-md text-[14px] text-ink-2">
-            How much of what buyers ask AI assistants your published facts can answer. Partial answers count half.
+            How many buyer questions your approved facts can answer. Partial answers count half.
+            {!counted ? " This pack is pending review, so it doesn\u2019t count yet." : pending ? " A newer pack is pending review." : ""}
           </p>
           <div className="mt-4 flex h-2 overflow-hidden rounded-full bg-subtle" aria-hidden>
             <div className="bg-accent" style={{ width: `${(n.covered / qs.length) * 100}%` }} />
@@ -481,15 +557,21 @@ export function Coverage({ draft }: { draft: Draft | undefined }) {
             <span className="flex items-center gap-1.5"><Dot tone="accent" /> {n.covered} covered</span>
             <span className="flex items-center gap-1.5"><Dot tone="warn" /> {n.partial} partial</span>
             <span className="flex items-center gap-1.5"><span className="inline-block size-1.5 rounded-full bg-line-strong" /> {n.missing} missing</span>
+            {!counted ? <span className="flex items-center gap-1.5 text-warn"><Dot tone="warn" /> pending review</span> : null}
           </p>
+          <p className="mt-3 text-[12.5px] text-ink-3">Not yet measured in AI assistants.</p>
         </div>
       </section>
       <Block
         title="Buyer questions"
         meta={
-          <L href={inboxHref(draft)} className="hover:text-ink">
-            {draft.status === "pending" ? "Open answer pack" : "From the answer pack"} · {timeAgo(draft.created_at)}
-          </L>
+          draft.status === "pending" ? (
+            <span>Pending review · {timeAgo(draft.created_at)}</span>
+          ) : (
+            <L href={inboxHref(draft)} className="hover:text-ink">
+              From the approved answer pack · {timeAgo(draft.reviewed_at ?? draft.created_at)}
+            </L>
+          )
         }
       >
         <ul className={cx(card, "divide-y divide-line overflow-hidden")}>

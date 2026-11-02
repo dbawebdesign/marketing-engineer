@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, Check, ChevronDown, Copy, Info, Pencil, X } from "lucide-react";
 import { reviewAction } from "@/app/(app)/actions";
@@ -16,6 +16,7 @@ import { emitEmbed } from "./embed-bridge";
 import { SignalSheet } from "./signal-sheet";
 import { sourceLabel } from "@/lib/signal-sources";
 import { dedupeReceipts } from "@/lib/receipts";
+import { withoutTitleH1 } from "@/lib/draft-body";
 
 export type ReviewDraft = {
   id: string;
@@ -35,7 +36,7 @@ export type ReviewDraft = {
   evidence: Receipt[];
   /** Quiet facts about the draft (platform, account, fit…), shown as one row under the title. */
   meta?: { label: string; value: string }[];
-  html: React.ReactNode;
+  agent_id: string | null;
 };
 
 type Receipt = { signal_id: string; quote: string; source?: string; url?: string | null; account?: string | null; occurred_at?: string };
@@ -101,7 +102,7 @@ async function copyText(text: string) {
 }
 
 /** Shortcuts are off while a dialog (command palette, sheet) is open on top of the page. */
-const overlayOpen = () => !!document.querySelector('[aria-modal="true"]');
+export const overlayOpen = () => !!document.querySelector('[aria-modal="true"]');
 
 function useModKey() {
   const [mod, setMod] = useState("⌘");
@@ -111,92 +112,128 @@ function useModKey() {
   return mod;
 }
 
+/** What the inbox can ask of the open pane: handle a key, or leave (asking first if there are unsaved edits). */
+export type PaneApi = { key: (e: KeyboardEvent) => void; leave: (then: () => void) => void };
+export type PaneSnapshot = { mode: "view" | "edit" | "reject"; body: string; feedback: string };
+
 export function ReviewPane({
   draft,
-  nextId,
   reasons = [],
-  listQuery = "",
   scopeQuery = "",
+  api,
+  advance,
+  restore,
+  initial,
 }: {
   draft: ReviewDraft;
-  nextId: string | null;
   reasons?: RecentReason[];
-  /** The list's query (tab, filter) with a trailing "&", kept when moving on. */
-  listQuery?: string;
   /** Just the filter part, for coming back to the pending queue. */
   scopeQuery?: string;
+  /** The inbox reads keys through this, so a key pressed right after J lands on the new draft. */
+  api: React.MutableRefObject<PaneApi | null>;
+  /** Move on optimistically after a decision. False when there's nothing to move on to. */
+  advance: () => boolean;
+  /** The decision failed after moving on: bring this draft back, as it was. */
+  restore: (id: string, snap: PaneSnapshot) => void;
+  /** State to come back to after a failed decision. */
+  initial?: PaneSnapshot | null;
 }) {
   const router = useRouter();
   const base = useBase();
   const mod = useModKey();
-  const [mode, setMode] = useState<"view" | "edit" | "reject">("view");
+  const [mode, setMode] = useState<"view" | "edit" | "reject">(initial?.mode ?? "view");
   const [preview, setPreview] = useState(false);
-  const [body, setBody] = useState(draft.body);
-  const [feedback, setFeedback] = useState("");
+  const [body, setBody] = useState(initial?.body ?? draft.body);
+  const [feedback, setFeedback] = useState(initial?.feedback ?? "");
   const [remember, setRemember] = useState(true);
-  const [pending, start] = useTransition();
+  const [busy, setBusy] = useState(false);
+  /** "Discard edits?" is showing; `then` runs if the person confirms. */
+  const [confirm, setConfirm] = useState<{ then: () => void } | null>(null);
+  const [sheet, setSheet] = useState<Receipt | null>(null);
   const focusField = () => document.querySelector<HTMLTextAreaElement>("[data-review-field]")?.focus();
   const editable = draft.status === "pending";
   const agent = draft.agent_name ?? "this agent";
   const fb = feedback.trim();
   const alreadyRule = reasons.some((r) => r.isRule && r.text === fb);
   const teach = remember && !alreadyRule && !!fb;
-  const canReject = !pending && (!remember || alreadyRule || !!fb);
-
-  useEffect(() => {
-    setMode("view");
-    setPreview(false);
-    setBody(draft.body);
-    setFeedback("");
-  }, [draft.id, draft.body]);
+  const canReject = !busy && (!remember || alreadyRule || !!fb);
+  const dirty = (mode === "edit" && body !== draft.body) || (mode === "reject" && !!fb);
+  const receipts = useMemo(() => dedupeReceipts(draft.evidence), [draft.evidence]);
+  const openReceipt = useCallback((i: number) => setSheet(receipts[i] ?? null), [receipts]);
+  const rendered = useMemo(
+    () => (
+      <Markdown cacheKey={`draft:${draft.id}`} receipts={receipts} onReceipt={openReceipt}>
+        {withoutTitleH1(body, draft.title)}
+      </Markdown>
+    ),
+    [body, draft.id, draft.title, receipts, openReceipt],
+  );
 
   const decide = (decision: "approve" | "reject") => {
-    if (pending) return;
+    if (busy) return;
     if (decision === "reject" && !canReject) return;
-    start(async () => {
-      const r = await reviewAction(draft.id, {
-        decision,
-        feedback: fb || undefined,
-        remember: teach,
-        body: body !== draft.body ? body : undefined,
-      });
-      if (!r.ok) return void toast.error(r.error);
-      emitEmbed(decision === "approve" ? "draft.approved" : "draft.rejected", { id: draft.id, title: draft.title });
+    const snap: PaneSnapshot = { mode, body, feedback };
+    const input = { decision, feedback: fb || undefined, remember: decision === "reject" && teach, body: body !== draft.body ? body : undefined };
+    const d = draft;
+    // Move on now; the server catches up. If it refuses, the draft comes back as it was.
+    const moved = advance();
+    if (!moved) setBusy(true);
+    void (async () => {
+      const r = await reviewAction(d.id, input);
+      if (!r.ok) {
+        setBusy(false);
+        if (moved) restore(d.id, snap);
+        return void toast.error(r.error, { key: "review" });
+      }
+      emitEmbed(decision === "approve" ? "draft.approved" : "draft.rejected", { id: d.id, title: d.title });
       const text =
-        decision === "approve"
-          ? (r.data?.effect ?? `Approved. Saved to ${draft.system_label}.`)
-          : teach
-            ? `Rejected. ${agent} will remember why.`
-            : "Rejected";
-      const id = draft.id;
-      const href = draft.effect_href;
-      lastDecision = draft.undoable ? { id, at: Date.now(), scope: scopeQuery } : null;
+        decision === "approve" ? (r.data?.effect ?? `Approved. Saved to ${d.system_label}.`) : input.remember ? `Rejected. ${agent} will remember why.` : "Rejected";
+      lastDecision = d.undoable ? { id: d.id, at: Date.now(), scope: scopeQuery } : null;
       // Undo when the review can be taken back; otherwise a way to see where the approval went.
       toast.ok(text, {
         key: "review",
-        action: draft.undoable
+        action: d.undoable
           ? { label: "Undo", run: () => undoDecision(router, base) }
           : decision === "approve"
-            ? { label: "View", run: () => router.push(base + href) }
+            ? { label: "View", run: () => router.push(base + d.effect_href) }
             : undefined,
       });
-      router.push(nextId ? `${base}/inbox?${listQuery}d=${nextId}` : `${base}/inbox?${scopeQuery}done=${id}`, { scroll: false });
+      if (!moved) router.push(`${base}/inbox?${scopeQuery}done=${d.id}`, { scroll: false });
       router.refresh();
-    });
+    })();
   };
 
   const cancel = () => {
+    setConfirm(null);
     if (mode === "edit") setBody(draft.body);
+    if (mode === "reject") setFeedback("");
     setMode("view");
   };
+  /** Leave edit or reject mode, asking first when there's text that would be lost. */
+  const guard = (then: () => void) => {
+    if (dirty) setConfirm({ then });
+    else then();
+  };
 
-  // Latest-handler ref so the single window listener never sees stale state.
-  const onKey = useRef<(e: KeyboardEvent) => void>(() => {});
-  onKey.current = (e: KeyboardEvent) => {
-    if (!editable || e.defaultPrevented || overlayOpen()) return;
+  const onKey = (e: KeyboardEvent) => {
+    if (e.defaultPrevented || overlayOpen()) return;
+    if (confirm) {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        const then = confirm.then;
+        cancel();
+        then();
+      } else if (e.key === "Escape") {
+        e.preventDefault();
+        setConfirm(null);
+        requestAnimationFrame(focusField);
+      }
+      return;
+    }
+    if (!editable) return;
     if (e.key === "Escape" && mode !== "view") {
       e.preventDefault();
-      cancel();
+      guard(cancel);
       return;
     }
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && mode !== "view") {
@@ -215,15 +252,23 @@ export function ReviewPane({
       setMode(k === "r" ? "reject" : "edit");
     }
   };
-  useEffect(() => {
-    const h = (e: KeyboardEvent) => onKey.current(e);
-    window.addEventListener("keydown", h);
-    return () => window.removeEventListener("keydown", h);
-  }, []);
+  // Registered at commit (layout), so the very next keystroke after J reaches this draft.
+  const latest = useRef({ onKey, guard });
+  latest.current = { onKey, guard };
+  useLayoutEffect(() => {
+    const mine: PaneApi = { key: (e) => latest.current.onKey(e), leave: (then) => latest.current.guard(then) };
+    api.current = mine;
+    return () => {
+      if (api.current === mine) api.current = null;
+    };
+  }, [api]);
 
   useEffect(() => {
     if (mode !== "view" && !preview) requestAnimationFrame(focusField);
   }, [mode, preview]);
+
+  // Typing again answers "Discard edits?" with "no".
+  useEffect(() => setConfirm(null), [body, feedback]);
 
   // Let the command palette act on this draft ("This draft" group).
   const cmds = useRef({ decide, setMode, body });
@@ -240,7 +285,7 @@ export function ReviewPane({
   }, [editable, draft.id, draft.title]);
 
   return (
-    <article className="animate-in" key={draft.id}>
+    <article data-review-pane={draft.id}>
       <header className="mb-6">
         <p className="text-sm text-ink-3">
           {draft.system_label} · {draft.agent_name ?? "Agent"} · {timeAgo(draft.created_at)}
@@ -305,12 +350,38 @@ export function ReviewPane({
           )}
         </div>
       ) : (
-        <div className="rounded-xl bg-surface p-5 ring-1 ring-line sm:p-6">{body === draft.body ? draft.html : <Markdown>{body}</Markdown>}</div>
+        <div className="rounded-xl bg-surface p-5 ring-1 ring-line sm:p-6">{rendered}</div>
       )}
+
+      {/* Receipts sit with the content, above the sticky bar, so the bar never covers them. */}
+      <Receipts list={receipts} onOpen={setSheet} />
 
       {editable ? (
         <div className="sticky bottom-[calc(57px+env(safe-area-inset-bottom))] md:bottom-0 -mx-1 mt-5 border-t border-line bg-bg/90 px-1 py-4 backdrop-blur">
-          {mode === "reject" ? (
+          {confirm ? (
+            <div role="alertdialog" aria-label="Discard edits?" data-discard-confirm className="flex flex-wrap items-center gap-2">
+              <span className="mr-1 text-[14px] font-medium text-ink">Discard edits?</span>
+              <Button
+                variant="danger"
+                onClick={() => {
+                  const then = confirm.then;
+                  cancel();
+                  then();
+                }}
+              >
+                Discard <Kbd>↵</Kbd>
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setConfirm(null);
+                  focusField();
+                }}
+              >
+                Keep editing <Kbd>esc</Kbd>
+              </Button>
+            </div>
+          ) : mode === "reject" ? (
             <div className="space-y-3">
               <label htmlFor="reject-reason" className="block text-[13px] font-medium text-ink-2">
                 {remember && !alreadyRule ? (
@@ -364,7 +435,7 @@ export function ReviewPane({
                   </label>
                 )}
                 <div className="ml-auto flex gap-2">
-                  <Button variant="ghost" onClick={cancel}>
+                  <Button variant="ghost" onClick={() => guard(cancel)}>
                     Cancel <Kbd>esc</Kbd>
                   </Button>
                   <Button variant="danger" disabled={!canReject} onClick={() => decide("reject")}>
@@ -375,16 +446,16 @@ export function ReviewPane({
             </div>
           ) : mode === "edit" ? (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="primary" disabled={pending} onClick={() => decide("approve")}>
+              <Button variant="primary" disabled={busy} onClick={() => decide("approve")}>
                 <Check size={14} /> Approve edit <span className="hidden sm:inline-flex"><Kbd>{mod}↵</Kbd></span>
               </Button>
-              <Button variant="ghost" onClick={cancel}>
+              <Button variant="ghost" onClick={() => guard(cancel)}>
                 Discard edit <Kbd>esc</Kbd>
               </Button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="primary" disabled={pending} onClick={() => decide("approve")}>
+              <Button variant="primary" disabled={busy} aria-busy={busy} onClick={() => decide("approve")}>
                 <Check size={14} /> Approve <span className="hidden sm:inline-flex"><Kbd>A</Kbd></span>
               </Button>
               <Button variant="secondary" onClick={() => setMode("edit")}>
@@ -393,12 +464,7 @@ export function ReviewPane({
               <Button variant="secondary" onClick={() => setMode("reject")}>
                 <X size={14} /> Reject <span className="hidden sm:inline-flex"><Kbd>R</Kbd></span>
               </Button>
-              <Button
-                variant="ghost"
-                className="ml-auto"
-                aria-label="Copy draft"
-                onClick={() => copyText(body)}
-              >
+              <Button variant="ghost" className="ml-auto" aria-label="Copy draft" onClick={() => copyText(body)}>
                 <Copy size={13} /> <span className="hidden sm:inline">Copy</span>
               </Button>
             </div>
@@ -406,20 +472,18 @@ export function ReviewPane({
         </div>
       ) : null}
 
-      <Receipts evidence={draft.evidence} />
+      {sheet ? <SignalSheet id={sheet.signal_id} quote={sheet.quote} onClose={() => setSheet(null)} /> : null}
     </article>
   );
 }
 
 /** The draft's receipts: one line until asked, each quote opening its signal in a sheet. */
-function Receipts({ evidence }: { evidence: Receipt[] }) {
-  const list = dedupeReceipts(evidence);
+function Receipts({ list, onOpen }: { list: Receipt[]; onOpen: (r: Receipt) => void }) {
   const [open, setOpen] = useState(false);
-  const [sheet, setSheet] = useState<Receipt | null>(null);
   if (!list.length) return null;
   const signals = new Set(list.map((e) => e.signal_id)).size;
   return (
-    <section className="mt-8">
+    <section className="mt-4" data-receipts>
       <button
         type="button"
         aria-expanded={open}
@@ -441,7 +505,7 @@ function Receipts({ evidence }: { evidence: Receipt[] }) {
                   onClick={(ev) => {
                     if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
                     ev.preventDefault();
-                    setSheet(e);
+                    onOpen(e);
                   }}
                   className="after:absolute after:inset-0 after:rounded-xl focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent"
                 >
@@ -462,32 +526,6 @@ function Receipts({ evidence }: { evidence: Receipt[] }) {
           ))}
         </ul>
       ) : null}
-      {sheet ? <SignalSheet id={sheet.signal_id} quote={sheet.quote} onClose={() => setSheet(null)} /> : null}
     </section>
   );
-}
-
-/** j/k through the inbox list, anywhere on the page except inside text fields. */
-export function InboxKeys({ ids, current, listQuery }: { ids: string[]; current: string | null; /** Tab and filter, with a trailing "&". */ listQuery: string }) {
-  const router = useRouter();
-  const base = useBase();
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || overlayOpen()) return;
-      if (document.querySelector("[data-review-editing]")) return; // don't navigate away from an unsaved edit
-      const k = e.key.toLowerCase();
-      if (k !== "j" && k !== "k") return;
-      const i = current ? ids.indexOf(current) : -1;
-      const next = k === "j" ? ids[i + 1] : i > 0 ? ids[i - 1] : undefined;
-      if (!next) return;
-      e.preventDefault();
-      router.push(`${base}/inbox?${listQuery}d=${next}`, { scroll: false });
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [ids, current, router, base, listQuery]);
-  useEffect(() => {
-    if (current) document.querySelector(`[data-draft="${current}"]`)?.scrollIntoView({ block: "nearest" });
-  }, [current]);
-  return null;
 }

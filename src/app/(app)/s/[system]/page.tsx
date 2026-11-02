@@ -82,8 +82,11 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
     // The latest approved memo or brief *is* the document shown above.
     drafts.find((d) => (d.type === "market_memo" || d.type === "cockpit_memo") && (d.status === "approved" || d.status === "published")),
     drafts.find((d) => d.type === "creative_batch"),
-    drafts.find((d) => d.type === "ai_answer_pack"),
+    drafts.find((d) => d.type === "ai_answer_pack" && (d.status === "approved" || d.status === "published")) ?? drafts.find((d) => d.type === "ai_answer_pack"),
   ].flatMap((d) => (d ? [d.id] : []));
+  // Coverage counts approved packs only; a newer pack waiting for review is shown as pending.
+  const approvedPack = drafts.find((d) => d.type === "ai_answer_pack" && (d.status === "approved" || d.status === "published"));
+  const pendingPack = drafts.find((d) => d.type === "ai_answer_pack" && d.status === "pending" && (!approvedPack || +new Date(d.created_at) > +new Date(approvedPack.created_at)));
   const docView = (title: string, noun: string, idle: { title: string; body: string }) => (
     <DocView
       doc={doc}
@@ -165,7 +168,7 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
             </>
           ) : null}
 
-          {system === "ai_search" ? <Coverage draft={drafts.find((d) => d.type === "ai_answer_pack")} /> : null}
+          {system === "ai_search" ? <Coverage approved={approvedPack} pending={pendingPack} /> : null}
 
           {system !== "outbound_signal" ? <DraftsList drafts={drafts} hide={shown} slug={slug} /> : null}
         </>

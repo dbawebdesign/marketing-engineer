@@ -112,6 +112,21 @@ async function applyApproval(tx: Tx, ctx: Ctx, d: Draft): Promise<string | null>
       return "Published the weekly brief.";
     case "creative_batch": {
       const variants = (d.payload.variants as { id: string; label: string; content?: string }[] | undefined) ?? [];
+      // Hooks written for a queued test fill that test and start it, instead of opening a second one.
+      const forTest = d.run_id
+        ? await tx.query<{ id: string; name: string }>(
+            `select e.id, e.name from runs r join experiments e on e.id::text = r.input->>'experiment_id' where r.id = $1 and e.status = 'draft' for update of e`,
+            [d.run_id],
+          )
+        : null;
+      const queued = forTest?.rows[0];
+      if (queued && variants.length) {
+        await tx.query(
+          `update experiments set variants = variants || $2::jsonb, metric = $3, channel = $4, status = 'running', started_at = now() where id = $1`,
+          [queued.id, JSON.stringify(variants), String(d.payload.metric ?? "demo_request"), String(d.payload.channel ?? "paid_social")],
+        );
+        return `Added ${variants.length} variants to “${queued.name}” and started it.`;
+      }
       await tx.query(
         `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, status, variants, started_at) values ($1,$2,$3,$4,$5,$6,'running',$7, now())`,
         [ctx.tenantId, d.id, d.title.slice(0, 200), String(d.payload.hypothesis ?? ""), String(d.payload.channel ?? "paid_social"), String(d.payload.metric ?? "demo_request"), JSON.stringify(variants)],

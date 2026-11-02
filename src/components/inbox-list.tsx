@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { X } from "lucide-react";
 import { L, NAV_ITEMS } from "./nav";
 import { Kbd, cx, plural, timeAgo } from "./ui";
@@ -33,8 +33,11 @@ export function InboxList({
   tab,
   listQuery,
   filter,
+  onOpen,
 }: {
   rows: InboxRow[];
+  /** Open a draft in place (no navigation). Modified clicks still open the link. */
+  onOpen?: (id: string) => void;
   selectedId: string | null;
   tab: string;
   /** Tab and filter, with a trailing "&". */
@@ -83,35 +86,42 @@ export function InboxList({
       <ul className="space-y-0.5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         {rows.map((d) => {
           const on = d.id === selectedId;
-          const Icon = iconFor(d.systemHref);
-          const isNew = tab === "pending" && !!seen && !on && !seen.has(d.id);
-          return (
-            <li key={d.id} data-draft={d.id}>
-              <L
-                href={`/inbox?${listQuery}d=${d.id}`}
-                scroll={false}
-                aria-current={on ? "true" : undefined}
-                className={cx(
-                  "relative flex gap-3 rounded-xl px-3.5 py-3 transition-colors",
-                  on ? "bg-ink/[0.08] ring-1 ring-line-strong" : "hover:bg-ink/[0.035]",
-                )}
-              >
-                <span className={cx("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md", on ? "bg-surface text-ink shadow-soft" : "bg-subtle text-ink-3")}>
-                  {Icon ? <Icon size={13} /> : null}
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className={cx("line-clamp-2 text-[14px] leading-snug", "text-ink", (isNew || on) && "font-medium")}>{d.title}</span>
-                  <span className="mt-1 block text-xs text-ink-3">
-                    {d.systemShort} · {timeAgo(d.created_at)}
-                    {d.receipts ? ` · ${plural(d.receipts, "receipt")}` : ""}
-                  </span>
-                </span>
-                {isNew ? <span aria-label="New" className="mt-2 size-1.5 shrink-0 rounded-full bg-accent" /> : null}
-              </L>
-            </li>
-          );
+          return <Row key={d.id} d={d} on={on} isNew={tab === "pending" && !!seen && !on && !seen.has(d.id)} href={`/inbox?${listQuery}d=${d.id}`} onOpen={onOpen} />;
         })}
       </ul>
     </div>
   );
 }
+
+/** One row. Memoized so moving the selection re-renders two rows, not the whole list. */
+const Row = memo(function Row({ d, on, isNew, href, onOpen }: { d: InboxRow; on: boolean; isNew: boolean; href: string; onOpen?: (id: string) => void }) {
+  const Icon = iconFor(d.systemHref);
+  return (
+    <li data-draft={d.id}>
+      <L
+        href={href}
+        scroll={false}
+        prefetch={false}
+        onClick={(e) => {
+          if (!onOpen || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+          e.preventDefault();
+          onOpen(d.id);
+        }}
+        aria-current={on ? "true" : undefined}
+        className={cx("relative flex gap-3 rounded-xl px-3.5 py-3 transition-colors", on ? "bg-ink/[0.08] ring-1 ring-line-strong" : "hover:bg-ink/[0.035]")}
+      >
+        <span className={cx("mt-0.5 grid size-6 shrink-0 place-items-center rounded-md", on ? "bg-surface text-ink shadow-soft" : "bg-subtle text-ink-3")}>
+          {Icon ? <Icon size={13} /> : null}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className={cx("line-clamp-2 text-[14px] leading-snug", "text-ink", (isNew || on) && "font-medium")}>{d.title}</span>
+          <span className="mt-1 block text-xs text-ink-3">
+            {d.systemShort} · {timeAgo(d.created_at)}
+            {d.receipts ? ` · ${plural(d.receipts, "receipt")}` : ""}
+          </span>
+        </span>
+        {isNew ? <span aria-label="New" className="mt-2 size-1.5 shrink-0 rounded-full bg-accent" /> : null}
+      </L>
+    </li>
+  );
+});

@@ -76,7 +76,7 @@ export function ShortcutsSheet() {
         [<Kbd key="e">E</Kbd>, "Edit"],
         [<Kbd key="r">R</Kbd>, "Reject with a reason"],
         [<Kbd key="m">{mod}↵</Kbd>, "Approve edit / confirm reject"],
-        [<Kbd key="esc">esc</Kbd>, "Discard edit / cancel"],
+        [<Kbd key="esc">esc</Kbd>, "Cancel (asks before discarding edits)"],
       ],
     },
     {
@@ -97,12 +97,15 @@ export function ShortcutsSheet() {
         aria-modal="true"
         data-shortcuts
         aria-label="Keyboard shortcuts"
-        className="animate-in w-full max-w-[380px] rounded-2xl bg-surface p-2 shadow-pop ring-1 ring-line focus:outline-none"
+        className="animate-in w-full max-w-[380px] rounded-2xl bg-surface p-2 shadow-pop ring-1 ring-line"
+        // The container takes focus so Esc and Tab work, but it isn't a control: no ring on it.
+        // Inline because the global :focus-visible rule sits outside Tailwind's layers and beats utilities.
+        style={{ outline: "none" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-3 pb-1 pt-2">
           <h2 className="text-[14px] font-semibold tracking-tight">Keyboard shortcuts</h2>
-          <button type="button" aria-label="Close" onClick={() => setOpen(false)} className="grid size-7 place-items-center rounded-md text-ink-3 hover:bg-subtle hover:text-ink">
+          <button type="button" aria-label="Close" onClick={() => setOpen(false)} className="grid size-7 place-items-center rounded-md text-ink-3 hover:bg-subtle hover:text-ink focus-visible:bg-subtle">
             <X size={14} />
           </button>
         </div>
