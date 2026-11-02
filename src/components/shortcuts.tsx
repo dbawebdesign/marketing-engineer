@@ -127,7 +127,7 @@ export function ShortcutsSheet() {
     {
       name: "Anywhere",
       rows: [
-        [<Kbd key="z">{mod}Z</Kbd>, "Undo the last review"],
+        [<Kbd key="z">{mod}Z</Kbd>, "Undo the last review (when possible)"],
         [<Kbd key="k">{mod}K</Kbd>, "Search and commands"],
         [<Kbd key="q">?</Kbd>, "This sheet"],
       ],

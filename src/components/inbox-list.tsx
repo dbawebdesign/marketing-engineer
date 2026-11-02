@@ -25,6 +25,41 @@ const writeSeen = (s: Set<string>) => {
   }
 };
 
+const VISIT_KEY = "me:inbox-visit";
+/** When the inbox was last opened (before now), and mark this visit. First visit: now, so nothing reads as new. */
+let lastRead: { at: number; since: number } | null = null;
+const readVisit = (): number => {
+  const now = Date.now();
+  // Coming back within half an hour in the same tab (a remount, a filter change, a trip to Today) is the same visit.
+  if (lastRead && now - lastRead.at < 30 * 60_000) {
+    lastRead.at = now;
+    try {
+      localStorage.setItem(VISIT_KEY, String(now));
+    } catch {
+      /* ignore */
+    }
+    return lastRead.since;
+  }
+  const since = readStoredVisit(now);
+  lastRead = { at: now, since };
+  return since;
+};
+const readStoredVisit = (now: number): number => {
+  try {
+    const prev = Number(localStorage.getItem(VISIT_KEY));
+    localStorage.setItem(VISIT_KEY, String(now));
+    return Number.isFinite(prev) && prev > 0 ? prev : now;
+  } catch {
+    return now;
+  }
+};
+
+/** An empty inbox is still a visit: drafts that arrive after it read as new next time. */
+export function InboxVisit() {
+  useEffect(() => void readVisit(), []);
+  return null;
+}
+
 const iconFor = (href: string) => NAV_ITEMS.find((n) => n.href === href)?.icon;
 
 /** The inbox's left column: system glyph, unread dot, strong selected state. */
@@ -51,6 +86,9 @@ export function InboxList({
 }) {
   // null until mounted, so server and first client render agree (no dots yet).
   const [seen, setSeen] = useState<Set<string> | null>(null);
+  // Drafts are "new" only if they arrived since the last visit. A first visit counts everything as seen.
+  const [since, setSince] = useState<number | null>(null);
+  useEffect(() => setSince(readVisit()), []);
   useEffect(() => {
     const s = readSeen();
     if (selectedId && !s.has(selectedId)) {
@@ -59,11 +97,12 @@ export function InboxList({
     }
     setSeen(new Set(s));
   }, [selectedId]);
+  const isUnread = (r: InboxRow) => !!seen && since !== null && !seen.has(r.id) && +new Date(r.created_at) > since;
 
   const live = leaving?.size ? rows.filter((r) => !leaving.has(r.id)) : rows;
   // One tag per row only when sample and real drafts mix; an all-sample queue says it once, in the header.
   const allSample = live.length > 0 && live.every((r) => r.sample);
-  const unread = tab === "pending" && seen ? live.filter((r) => !seen.has(r.id)).length : 0;
+  const unread = tab === "pending" ? live.filter(isUnread).length : 0;
   return (
     <div className="lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-3rem)] lg:flex-col">
       {filter ? (
@@ -97,7 +136,7 @@ export function InboxList({
         {rows.map((d) => {
           const on = d.id === selectedId;
           const out = !!leaving?.has(d.id);
-          return <Row key={d.id} d={d} on={on && !out} out={out} isNew={tab === "pending" && !!seen && !on && !out && !seen.has(d.id)} tagSample={!allSample && !!d.sample} href={`/inbox?${listQuery}d=${d.id}`} onOpen={onOpen} />;
+          return <Row key={d.id} d={d} on={on && !out} out={out} isNew={tab === "pending" && !on && !out && isUnread(d)} tagSample={!allSample && !!d.sample} href={`/inbox?${listQuery}d=${d.id}`} onOpen={onOpen} />;
         })}
       </ul>
     </div>

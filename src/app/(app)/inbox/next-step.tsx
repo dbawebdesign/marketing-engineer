@@ -8,6 +8,7 @@ import { getDoc } from "@/server/services/memory";
 import { todayState } from "@/server/services/review-extra";
 import { SYSTEM_META, type System } from "@/server/agents/types";
 import { slugForSystem } from "@/lib/systems";
+import { endSentence } from "@/lib/approval-notes";
 import { L } from "@/components/nav";
 import { RunButton } from "@/components/run-button";
 import { DemoButton } from "@/components/demo-button";
@@ -128,7 +129,7 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
       const again = agents.find((a) => a.id === done.agent_id);
       return (
         <Card title={`Rejected. ${done.agent_name ?? "The agent"} will do better next run`} eyebrow="Inbox is clear">
-          <p>{done.feedback ? <>It learned: “{done.feedback}”.</> : "Run it again when you want a fresh draft."}</p>
+          <p>{done.feedback ? <>It learned: “{endSentence(done.feedback)}”</> : "Run it again when you want a fresh draft."}</p>
           <Actions>
             {again ? <RunButton agentId={again.id} label={`Run ${again.name} again`} variant="primary" workingLabel="Rewriting…" activeRunId={activeFor(again.id)} /> : null}
           </Actions>

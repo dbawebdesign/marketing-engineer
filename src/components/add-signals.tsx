@@ -3,7 +3,8 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { LoaderCircle, Plus, Upload, X } from "lucide-react";
-import { addSignalsAction, importCsvAction } from "@/app/(app)/actions";
+import { addSignalsAction, importCsvAction, runAgentAction } from "@/app/(app)/actions";
+import { pulseOfferAction } from "@/app/(app)/actions-signals";
 import { Button, Input, Label, Textarea, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
 
@@ -84,11 +85,31 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
   }, [open]);
   const count = split ? content.split(/\n\s*\n+/).filter((c) => c.trim()).length : content.trim() ? 1 : 0;
 
-  const done = (r: { inserted: number; duplicates: number }) => {
-    toast.ok(`Added ${plural(r.inserted, "signal")}${r.duplicates ? ` · ${r.duplicates} already here` : ""}`);
+  /** Close, say what happened, and offer the run the new signals make possible. */
+  const done = async (r: { inserted: number; duplicates: number }) => {
+    const text = r.inserted
+      ? `Added ${plural(r.inserted, "signal")}${r.duplicates ? ` · ${r.duplicates} already here` : ""}`
+      : r.duplicates ? `${plural(r.duplicates, "signal")} already here` : "Nothing new to add";
     setContent("");
     setAccount("");
+    setOpen(false);
     router.refresh();
+    const offer = r.inserted ? await pulseOfferAction().catch(() => null) : null;
+    const pulse = offer?.ok ? offer.data : null;
+    toast.ok(text, {
+      key: "add-signals",
+      action: pulse
+        ? {
+            label: `Run ${pulse.name}`,
+            run: async () => {
+              const run = await runAgentAction(pulse.id);
+              if (!run.ok) return void toast.error(run.error, { key: "add-signals" });
+              toast.ok(`${pulse.name} is running · its memo lands in your inbox`, { key: "add-signals" });
+              router.refresh();
+            },
+          }
+        : undefined,
+    });
   };
 
   const onCsv = (f: File) =>
@@ -107,11 +128,17 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
         url: ci("url") >= 0 ? r[ci("url")] || null : null,
         occurred_at: ci("occurred_at") >= 0 && r[ci("occurred_at")] ? (r[ci("occurred_at")] as never) : undefined,
       })).filter((r) => r.content.trim());
+      const total = { inserted: 0, duplicates: 0 };
       for (let i = 0; i < data.length; i += 1000) {
         const res = await importCsvAction(data.slice(i, i + 1000));
-        if (!res.ok) return void toast.error(res.error);
-        if (res.data) done(res.data);
+        if (!res.ok) {
+          if (total.inserted) router.refresh();
+          return void toast.error(total.inserted ? `Added ${plural(total.inserted, "signal")}, then: ${res.error}` : res.error);
+        }
+        total.inserted += res.data?.inserted ?? 0;
+        total.duplicates += res.data?.duplicates ?? 0;
       }
+      await done(total);
     });
 
   const button = (
@@ -188,7 +215,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
               start(async () => {
                 const r = await addSignalsAction({ source, content, account, split });
                 if (!r.ok) toast.error(r.error);
-                else if (r.data) done(r.data);
+                else if (r.data) await done(r.data);
               })
             }
           >

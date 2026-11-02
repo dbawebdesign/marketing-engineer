@@ -55,7 +55,7 @@ export function DraftPreview({
   const long = lines.length > LINES;
   const shown = open || !long ? text : lines.slice(0, LINES).join("\n");
   return (
-    <section className="mb-4 overflow-hidden rounded-2xl bg-surface ring-1 ring-line" aria-labelledby={`${id}-t`}>
+    <section className="overflow-hidden rounded-2xl bg-surface ring-1 ring-line" aria-labelledby={`${id}-t`}>
       <div className="px-6 pt-5 sm:px-8 sm:pt-6">
         {quiet ? (
           label !== "Waiting for your review" ? <p className="text-[13px] text-ink-3">{label}</p> : null
@@ -89,7 +89,8 @@ export function DraftPreview({
         <Markdown>{shown}</Markdown>
       </div>
       <div className="flex items-center gap-2 px-6 pb-5 pt-4 sm:px-8 sm:pb-6">
-        <L href={href} className={buttonClass("primary", "sm")}>
+        {/* Quiet previews sit under a "waiting · Review" line that's already the page's primary action. */}
+        <L href={href} className={buttonClass(quiet ? "secondary" : "primary", "sm")}>
           Review in Inbox <ArrowRight size={14} aria-hidden />
         </L>
         {long ? (

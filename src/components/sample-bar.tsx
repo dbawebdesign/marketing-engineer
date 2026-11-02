@@ -31,7 +31,7 @@ export function SampleBar({ canClear, plan = null }: { canClear: boolean; plan?:
   const link = "font-medium text-ink underline-offset-2 hover:underline disabled:opacity-60";
   return (
     <div role="status" className="border-b border-line bg-subtle py-2 text-[13px] text-ink-2">
-      <div className="mx-auto flex max-w-[1080px] flex-wrap px-4 sm:px-10 items-center gap-x-2 gap-y-1">
+      <div className={`mx-auto flex max-w-[1080px] items-center gap-x-2 gap-y-1 px-4 sm:px-10 ${confirming ? "flex-wrap" : "flex-nowrap sm:flex-wrap"}`}>
         {confirming ? (
           <>
             <span>{describe(plan)}</span>
@@ -47,12 +47,16 @@ export function SampleBar({ canClear, plan = null }: { canClear: boolean; plan?:
           </>
         ) : (
           <>
-            <span>You&rsquo;re looking at sample data from Dispatchly, a made-up HVAC software company</span>
+            <span className="min-w-0 truncate">
+              <span className="sm:hidden">Sample data</span>
+              <span className="hidden sm:inline">You&rsquo;re looking at sample data from Dispatchly, a made-up HVAC software company</span>
+            </span>
             {canClear ? (
-              <span className="whitespace-nowrap">
+              <span className="shrink-0 whitespace-nowrap">
                 <span aria-hidden className="mr-2 text-ink-3">·</span>
                 <button type="button" onClick={() => setConfirming(true)} className={link}>
-                  Clear sample data
+                  <span className="sm:hidden">Clear</span>
+                  <span className="hidden sm:inline">Clear sample data</span>
                 </button>
               </span>
             ) : null}

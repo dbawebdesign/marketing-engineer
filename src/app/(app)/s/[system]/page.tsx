@@ -11,7 +11,7 @@ import { updatedLine } from "@/lib/doc-credit";
 import { docReceipts } from "@/server/services/doc-receipts";
 import { can } from "@/lib/rbac";
 import { AgentActions, AgentMeta } from "@/components/agent-card";
-import { AngleChart, Coverage, CreativeBatch, DocView, DraftsList, ExperimentBoard, FirstRun, OutboundQueue, PendingBlock, PostsLibrary } from "@/components/system-views";
+import { AngleChart, Coverage, CreativeBatch, DocView, DraftsList, ExperimentBoard, FirstRun, OutboundQueue, PendingBlock, PostsLibrary, primaryTest } from "@/components/system-views";
 import type { System } from "@/server/agents/types";
 
 /** What each system's agent makes, for its first-run panel. */
@@ -76,8 +76,10 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
   const hasOutput = drafts.length > 0 || !!doc?.content.trim() || experiments.length > 0;
   // Nothing made yet: one panel with the next step replaces the empty artifact views.
   const firstRun = !!lead && mine.length === 1 && !hasOutput;
-  // Something waits for review: that's the primary action on the page, so Run steps back.
-  const quiet = pending.length > 0;
+  // One primary action per page. Something waiting for review comes first (the tinted line), then a
+  // queued test's next move, and only then Run. Everything else is secondary.
+  const testFirst = pending.length ? null : system === "creative_testing" ? primaryTest(experiments, { write: can(ctx.role, "experiments:write"), run: canRun, hookLab: !!lead }) : null;
+  const quiet = pending.length > 0 || !!testFirst;
   // Drafts the page already shows in full stay out of "Recent drafts".
   const shown = [
     ...drafts.filter((d) => d.type === "post" && (d.status === "approved" || d.status === "published")),
@@ -155,8 +157,7 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
           ) : null}
 
           {/* Everything else: one line to the filtered inbox, at most one preview. */}
-          {system === "founder_content" ? <PendingBlock drafts={pending} slug={slug} preview /> : null}
-          {system === "outbound_signal" || system === "creative_testing" || system === "ai_search" ? <PendingBlock drafts={pending} slug={slug} /> : null}
+          {system === "founder_content" || system === "outbound_signal" || system === "creative_testing" || system === "ai_search" ? <PendingBlock drafts={pending} slug={slug} /> : null}
 
           {system === "founder_content" ? <PostsLibrary drafts={drafts} /> : null}
 
@@ -164,7 +165,7 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
 
           {system === "creative_testing" ? (
             <>
-              <ExperimentBoard experiments={experiments} hookLab={lead ? { id: lead.id, name: lead.name } : null} canWrite={can(ctx.role, "experiments:write")} canRun={canRun} />
+              <ExperimentBoard experiments={experiments} primaryId={testFirst} hookLab={lead ? { id: lead.id, name: lead.name } : null} canWrite={can(ctx.role, "experiments:write")} canRun={canRun} />
               <CreativeBatch draft={drafts.find((d) => d.type === "creative_batch")} />
             </>
           ) : null}

@@ -11,6 +11,8 @@ import { modelTierLabel } from "@/lib/schedule";
 import { L } from "@/components/nav";
 import { AgentEditor, RulesEditor } from "@/components/agent-editor";
 import { AgentRun } from "@/components/run-button";
+import { PendingBlock } from "@/components/system-views";
+import { listDrafts } from "@/server/services/drafts";
 import { Dot, plural, timeAgo } from "@/components/ui";
 
 export const metadata = { title: "Agent" };
@@ -34,18 +36,22 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
   if (!isUuid(id)) notFound();
   const ctx = await requireCtx();
   const { agent, rules, runs } = await getAgent(ctx, id).catch(() => notFound());
+  const slug = slugForSystem(agent.system);
+  // Drafts from this agent still waiting: reviewing them is the page's primary action, so Run steps back.
+  const waiting = (await listDrafts(ctx, { status: "pending", system: agent.system, limit: 100 }).catch(() => [])).filter((d) => d.agent_id === agent.id);
   return (
     <div className="animate-in">
       <p className="text-[13px] text-ink-3">
-        <L href={`/s/${slugForSystem(agent.system)}`} className="hover:text-ink">
+        <L href={`/s/${slug}`} className="hover:text-ink">
           {SYSTEM_META[agent.system].label}
         </L>
         <span aria-hidden> / </span>Agent
       </p>
       <div className="mb-8 mt-1 flex flex-wrap items-end justify-between gap-4">
         <h1 className="text-[26px] font-semibold tracking-[-0.02em]">{agent.name}</h1>
-        {can(ctx.role, "agents:run") ? <AgentRun agentId={agent.id} readiness={agent.readiness} size="md" /> : null}
+        {can(ctx.role, "agents:run") ? <AgentRun agentId={agent.id} readiness={agent.readiness} size="md" quiet={waiting.length > 0} /> : null}
       </div>
+      <PendingBlock drafts={waiting} slug={slug} />
       <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_300px]">
         <section>
           <H2>Job spec</H2>

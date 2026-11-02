@@ -25,6 +25,7 @@ export function ExperimentActions({
   results,
   canWrite,
   hookLab,
+  quiet = false,
 }: {
   id: string;
   name: string;
@@ -34,6 +35,8 @@ export function ExperimentActions({
   canWrite: boolean;
   /** Hook lab run "on this": the test's angle as the offer, linked back to the test. */
   hookLab: { id: string; name: string; offer: string } | null;
+  /** Another control on the page is the primary action: no dark buttons here. */
+  quiet?: boolean;
 }) {
   const [pending, start] = useTransition();
   const [calling, setCalling] = useState<ExperimentMove | null>(null);
@@ -95,7 +98,7 @@ export function ExperimentActions({
     return (
       <div className="mt-2.5 flex flex-wrap items-center gap-1.5" data-experiment-actions>
         {ready && canWrite ? (
-          <Button size="sm" variant="primary" disabled={pending} onClick={() => commit("start")}>
+          <Button size="sm" variant={quiet ? "secondary" : "primary"} disabled={pending} onClick={() => commit("start")}>
             <Play size={12} className="fill-current" aria-hidden /> Start test
           </Button>
         ) : null}
@@ -103,7 +106,7 @@ export function ExperimentActions({
           <RunButton
             agentId={hookLab.id}
             size="sm"
-            variant={ready ? "ghost" : "primary"}
+            variant={ready ? "ghost" : quiet ? "secondary" : "primary"}
             label={`Run ${hookLab.name} on this`}
             workingLabel="Writing hooks…"
             input={{ offer: hookLab.offer.slice(0, 600), experiment_id: id, experiment: name.slice(0, 200) }}

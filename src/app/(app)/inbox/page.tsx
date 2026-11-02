@@ -11,6 +11,9 @@ import { UndoShortcut, type RecentReason, type ReviewDraft } from "@/components/
 import type { Draft } from "@/server/services/drafts";
 import { Empty, cx, plural } from "@/components/ui";
 import { effectHref, isUndoable, oldestPendingMemo, recentRejectionReasons } from "@/server/services/review-extra";
+import { finalNoteOf } from "@/lib/approval-notes";
+import { aiEnabled } from "@/lib/ai/provider";
+import { InboxVisit } from "@/components/inbox-list";
 import { InboxNextStep } from "./next-step";
 import { InboxView } from "./inbox-view";
 
@@ -45,6 +48,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
     all.some((d) => d.status === "pending" && d.system !== "customer_truth") ? oldestPendingMemo(ctx) : null,
   ]);
   const reasons = Object.fromEntries(agentIds.map((id, i) => [id, reasonList[i] ?? []]));
+  const offline = !aiEnabled();
   const toPane = (d: Draft): ReviewDraft => ({
     id: d.id,
     title: d.title,
@@ -57,6 +61,8 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
     created_at: d.created_at,
     undoable: isUndoable(d.type),
     effect_href: effectHref(d.type, d.system),
+    final: isUndoable(d.type) ? null : finalNoteOf(d.type),
+    offline,
     pending_memo_id: memo && d.status === "pending" && d.system !== "customer_truth" && new Date(d.created_at) >= new Date(memo.created_at) ? memo.id : null,
     evidence: d.evidence ?? [],
     meta: metaOf(d.payload),
@@ -94,6 +100,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       <UndoShortcut />
       {empty ? (
         <>
+          <InboxVisit />
           {header}
           {elsewhere ? (
             <section className="max-w-2xl rounded-2xl bg-surface p-6 ring-1 ring-line">

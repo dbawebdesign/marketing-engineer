@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Check, ChevronDown, Copy, FlaskConical, Info, Pencil, X } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Copy, Cpu, FlaskConical, Info, Pencil, X } from "lucide-react";
 import { reviewAction } from "@/app/(app)/actions";
 import { undoReviewAction } from "@/app/(app)/actions-extra";
 import { Badge, Button, Kbd, Textarea, cx, plural, timeAgo } from "./ui";
@@ -17,6 +17,7 @@ import { SignalSheet } from "./signal-sheet";
 import { sourceLabel } from "@/lib/signal-sources";
 import { dedupeReceipts } from "@/lib/receipts";
 import { withoutTitleH1 } from "@/lib/draft-body";
+import type { FinalNote } from "@/lib/approval-notes";
 
 export type ReviewDraft = {
   id: string;
@@ -31,6 +32,10 @@ export type ReviewDraft = {
   undoable: boolean;
   /** Where an approval's effect shows up, e.g. "/s/truth". */
   effect_href: string;
+  /** What approving does that can't be taken back. Null when the review can be undone. */
+  final?: FinalNote | null;
+  /** Written by the offline engine because no AI provider is configured. */
+  offline?: boolean;
   /** Set when this downstream draft was written while a market memo still waits for review. */
   pending_memo_id?: string | null;
   evidence: Receipt[];
@@ -53,6 +58,8 @@ type Receipt = { signal_id: string; quote: string; source?: string; url?: string
  */
 const UNDO_WINDOW_MS = 115_000;
 let lastDecision: { id: string; at: number; scope: string } | null = null;
+/** The last decision ⌘Z can't take back, so the shortcut can say why instead of doing nothing. */
+let lastFinal: { at: number; why: string } | null = null;
 
 async function undoDecision(router: ReturnType<typeof useRouter>, base: string) {
   const d = lastDecision;
@@ -72,8 +79,12 @@ export function UndoShortcut() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
-      if (e.defaultPrevented || isTypingTarget(e.target) || overlayOpen() || !lastDecision) return;
+      if (e.defaultPrevented || isTypingTarget(e.target) || overlayOpen()) return;
       e.preventDefault();
+      if (!lastDecision) {
+        const why = lastFinal && Date.now() - lastFinal.at < UNDO_WINDOW_MS ? lastFinal.why : "Nothing to undo";
+        return void toast.ok(why, { key: "review" });
+      }
       if (Date.now() - lastDecision.at > UNDO_WINDOW_MS) {
         lastDecision = null;
         return void toast.error("Too late to undo. Reviews can be undone for two minutes.", { key: "review" });
@@ -84,6 +95,13 @@ export function UndoShortcut() {
     return () => window.removeEventListener("keydown", onKey);
   }, [router, base]);
   return null;
+}
+
+/** Why ⌘Z can't take this decision back, in one sentence. */
+function finalWhy(d: ReviewDraft, decision: "approve" | "reject") {
+  if (decision === "reject") return "This rejection can't be undone from here";
+  if (d.final) return d.final.why;
+  return "This approval can't be undone from here";
 }
 
 export type RecentReason = { text: string; isRule: boolean };
@@ -197,6 +215,7 @@ export function ReviewPane({
           ? effect ? `Approved · ${effect}` : `Approved · saved to ${d.system_label}`
           : input.remember ? `Rejected · ${agent} will remember why` : "Rejected";
       lastDecision = d.undoable ? { id: d.id, at: Date.now(), scope: scopeQuery } : null;
+      lastFinal = d.undoable ? null : { at: Date.now(), why: finalWhy(d, decision) };
       // Undo when the review can be taken back; otherwise a way to see where the approval went.
       toast.ok(text, {
         key: "review",
@@ -304,17 +323,29 @@ export function ReviewPane({
         </p>
         <h2 className="mt-1.5 text-[21px] font-semibold leading-snug tracking-[-0.015em] text-pretty">{draft.title}</h2>
         <DraftMetaRow meta={draft.meta} className="mt-2" />
-        {draft.sample ? (
-          <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3" data-sample-note>
-            <FlaskConical size={13} aria-hidden className="mt-[3px] shrink-0" />
-            <span>Built from sample data — Dispatchly, a made-up HVAC company</span>
+        {draft.sample || draft.offline ? (
+          <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3" data-sample-note={draft.sample || undefined} data-offline-note={draft.offline || undefined}>
+            {draft.sample ? <FlaskConical size={13} aria-hidden className="mt-[3px] shrink-0" /> : <Cpu size={13} aria-hidden className="mt-[3px] shrink-0" />}
+            <span className="min-w-0">
+              {draft.sample ? (draft.offline ? "Sample data (Dispatchly, a made-up HVAC company)" : "Built from sample data — Dispatchly, a made-up HVAC company") : null}
+              {draft.sample && draft.offline ? <span aria-hidden> · </span> : null}
+              {draft.offline ? (
+                <>
+                  Written by the offline engine <span aria-hidden>·</span>{" "}
+                  <L href="/settings" className="text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink">
+                    Connect Claude in Settings
+                  </L>{" "}
+                  for deeper drafts
+                </>
+              ) : null}
+            </span>
           </p>
         ) : null}
         {draft.pending_memo_id && editable ? (
           <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3">
             <Info size={13} className="mt-[3px] shrink-0" />
             <span className="min-w-0">
-              Built before this week&rsquo;s market memo was approved.{" "}
+              This week&rsquo;s market memo is still waiting for review.{" "}
               <L href={`/inbox?d=${draft.pending_memo_id}`} scroll={false} className="whitespace-nowrap text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink">
                 Review memo
               </L>
@@ -477,7 +508,14 @@ export function ReviewPane({
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
-              <Button variant="primary" disabled={busy} aria-busy={busy} onClick={() => decide("approve")}>
+              <Button
+                variant="primary"
+                disabled={busy}
+                aria-busy={busy}
+                onClick={() => decide("approve")}
+                title={draft.final ? `${draft.final.note}. This can\u2019t be undone from here.` : undefined}
+                aria-describedby={draft.final ? "approve-effect" : undefined}
+              >
                 <Check size={14} /> Approve <span className="hidden sm:inline-flex"><Kbd>A</Kbd></span>
               </Button>
               <Button variant="secondary" onClick={() => setMode("edit")}>
@@ -489,6 +527,11 @@ export function ReviewPane({
               <Button variant="ghost" className="ml-auto" aria-label="Copy draft" onClick={() => copyText(body)}>
                 <Copy size={13} /> <span className="hidden sm:inline">Copy</span>
               </Button>
+              {draft.final ? (
+                <p id="approve-effect" data-approve-effect className="basis-full text-[12.5px] text-ink-3">
+                  {draft.final.note} &middot; can&rsquo;t be undone
+                </p>
+              ) : null}
             </div>
           )}
         </div>

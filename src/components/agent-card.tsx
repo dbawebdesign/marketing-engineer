@@ -5,6 +5,13 @@ import { AgentRun } from "./run-button";
 import { AgentStatusText, agentStatus } from "./agent-status";
 import { buttonClass, cx } from "./ui";
 
+/** The readiness reason without the agent's name (the line already starts with it): "Reads sales calls: 3 in the last 7 days. It needs at least 5". */
+function readinessLine(name: string, reason: string | null) {
+  if (!reason) return "Not enough to draft from yet";
+  const r = reason.startsWith(`${name} `) ? reason.slice(name.length + 1) : reason;
+  return (r.charAt(0).toUpperCase() + r.slice(1)).replace(/\.$/, "");
+}
+
 /** One quiet line about the agent behind a system: name, what actually happened last, what's scheduled. */
 export function AgentMeta({ agent, className }: { agent: Agent; className?: string }) {
   const st = agentStatus(agent);
@@ -24,7 +31,7 @@ export function AgentMeta({ agent, className }: { agent: Agent; className?: stri
       {agent.readiness && !agent.readiness.ready ? (
         <span>
           <span aria-hidden>· </span>
-          {agent.readiness.signals ? `${agent.readiness.signals} of ${agent.readiness.need} signals` : "No signals"} in the last {agent.readiness.days} days
+          {readinessLine(agent.name, agent.readiness.reason)}
         </span>
       ) : null}
     </p>

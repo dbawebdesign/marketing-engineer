@@ -1,4 +1,4 @@
-import { ArrowRight, LoaderCircle, Plus } from "lucide-react";
+import { ArrowRight, Check, LoaderCircle, Plus } from "lucide-react";
 import type { ReactNode } from "react";
 import { requireCtx, currentSession } from "@/server/web/session";
 import { getDraft, listDrafts, pendingCount } from "@/server/services/drafts";
@@ -84,6 +84,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
     signals: a.readiness?.signals ?? 0,
     neverRun: !a.last_run,
     activeRunId: activeFor(a.id),
+    need: a.readiness?.need,
   });
   const bySystem = (sys: System) => agents.find((a) => a.system === sys);
   const pulse = bySystem("customer_truth");
@@ -135,6 +136,13 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const railAgents = agents.filter((a) => a.last_run || activeFor(a.id) || runnableNow(a));
   const quietAgents = agents.length - railAgents.length;
 
+  // Before the first approved memo, a three-step "How it works" explains the loop; it leaves once the loop has run.
+  // Shown only where the page would otherwise be bare: no review list, no activity yet.
+  const leftBusy = !!(headline && step.kind !== "review_memo") || pending.length > 0 || state.active.length > 0 || runs.length > 0;
+  const showHow = !state.approvedMemo && step.kind !== "intro" && !leftBusy;
+  const how = showHow ? <HowItWorks signals={totalSignals > 0} memo={!!state.pendingMemoId || pendingMemos > 0} /> : null;
+  const leftHasContent = leftBusy || !!how;
+
   const nextScheduled = agents
     .filter((a) => a.enabled && a.schedule_cron && a.next_run_at)
     .sort((a, b) => +new Date(a.next_run_at!) - +new Date(b.next_run_at!))[0];
@@ -159,12 +167,16 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
           hookLab={hookLab ? { id: hookLab.id, name: hookLab.name } : null}
           experiment={step.kind === "start_test" || step.kind === "hooks_for_test" || step.kind === "call_test" ? experiments.find((e) => e.id === step.experiment.id) : undefined}
           nextScheduled={nextScheduled ? `${nextScheduled.name} runs next, ${fmtNext(nextScheduled)}.` : null}
+          pulseReason={pulse?.readiness?.reason ?? null}
         />
       )}
 
+      {totalSignals === 0 && how ? <div className="mt-12">{how}</div> : null}
+
       {totalSignals > 0 ? (
-        <div className="mt-12 grid gap-12 lg:grid-cols-[minmax(0,1fr)_248px] lg:gap-14">
-          <div className="min-w-0 space-y-12">
+        <div className={cx("mt-12 grid gap-12", leftHasContent ? "lg:grid-cols-[minmax(0,1fr)_248px] lg:gap-14" : "max-w-md")}>
+          {leftHasContent ? <div className="min-w-0 space-y-12">
+            {how}
             {headline && step.kind !== "review_memo" ? (
               <section>
                 <Heading>What the market is telling us</Heading>
@@ -231,7 +243,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
                 </ul>
               </section>
             ) : null}
-          </div>
+          </div> : null}
 
           <aside className="space-y-12">
             {running ? (
@@ -301,6 +313,44 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   );
 }
 
+/** First run only: the loop in three steps, each checked off as it happens. */
+function HowItWorks({ signals, memo }: { signals: boolean; memo: boolean }) {
+  const steps = [
+    { done: signals, title: "Add what customers say", body: "Call notes, tickets, reviews, churn reasons." },
+    { done: memo, title: "Market pulse writes a memo", body: "What changed, with a receipt for every claim." },
+    { done: false, title: "You approve it", body: "It becomes the truth file every other agent drafts from." },
+  ];
+  return (
+    <section aria-labelledby="how-h" data-how-it-works>
+      <Heading>
+        <span id="how-h">How it works</span>
+      </Heading>
+      <ol className="grid gap-x-6 gap-y-4 border-t border-line pt-4 sm:grid-cols-3">
+        {steps.map((st, i) => (
+          <li key={st.title} className="flex gap-3">
+            <span
+              className={cx(
+                "mt-px grid size-5 shrink-0 place-items-center rounded-full text-[11px] font-medium tnum",
+                st.done ? "bg-accent-soft text-accent" : "bg-subtle text-ink-3 ring-1 ring-line",
+              )}
+              aria-hidden
+            >
+              {st.done ? <Check size={11} strokeWidth={2.5} /> : i + 1}
+            </span>
+            <span className="min-w-0">
+              <span className={cx("block text-[14px] font-medium", st.done ? "text-ink-3" : "text-ink")}>
+                {st.title}
+                {st.done ? <span className="sr-only"> (done)</span> : null}
+              </span>
+              <span className="mt-0.5 block text-[13px] leading-snug text-ink-3">{st.body}</span>
+            </span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
 /** The one thing worth doing next, with the control to do it. */
 function NextCard({
   step,
@@ -310,8 +360,11 @@ function NextCard({
   hookLab,
   experiment,
   nextScheduled,
+  pulseReason = null,
 }: {
   step: Exclude<NextStep, { kind: "intro" }>;
+  /** Market pulse's own readiness reason: the same words the system page uses. */
+  pulseReason?: string | null;
   memoHeadline: string | null;
   reviewFirst: { id: string; agents: string[] } | null;
   totalSignals: number;
@@ -337,7 +390,7 @@ function NextCard({
         );
       } else {
         title = "Add a few more signals";
-        body = `Market pulse needs at least ${step.need} signals from the last ${step.days ?? 7} days to write a memo. There ${step.signals === 1 ? "is 1" : `are ${step.signals}`} so far.`;
+        body = pulseReason ?? `Market pulse needs at least ${step.need} signals from the last ${step.days ?? 7} days to write a memo. There ${step.signals === 1 ? "is 1" : `are ${step.signals}`} so far.`;
         actions = (
           <L href="/signals?add=1" className={buttonClass("primary")}>
             <Plus size={14} aria-hidden /> Add signals

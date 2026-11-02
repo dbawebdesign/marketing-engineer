@@ -9,6 +9,7 @@ import { DemoButton } from "./demo-button";
 import { ExperimentActions } from "./experiment-actions";
 import { metaOf } from "@/lib/draft-meta";
 import { fmtScore } from "@/lib/experiment-results";
+import { splitSummary } from "@/lib/answer-summary";
 import { Badge, Dot, buttonClass, cx, plural, timeAgo } from "./ui";
 
 /* ------------------------------------------------------------------ shared */
@@ -53,30 +54,16 @@ const NOUN: Record<string, [string, string?]> = {
 };
 
 /**
- * "5 posts waiting · Review →" as one line, linking to the inbox filtered to this system,
- * plus at most one preview when the page has nothing else showing that draft.
+ * "5 posts waiting · Review →": the one waiting pattern on every system and agent page, a tinted
+ * line linking to the inbox filtered to this system. `preview` adds the first draft below it,
+ * only where the page has nothing else showing it (a truth file or brief before the first approval).
  */
 export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[]; slug: string; preview?: boolean }) {
   if (!drafts.length) return null;
   const types = new Set(drafts.map((d) => d.type));
   const noun = types.size === 1 ? (NOUN[drafts[0]!.type] ?? ["draft"]) : (["draft"] as [string]);
   const first = drafts[0]!;
-  const href = drafts.length === 1 ? systemInboxHref(slug, first) : systemInboxHref(slug);
-  // With a preview, the card is the one way in: its own status line and Review button, no second row above it.
-  if (preview)
-    return (
-      <section className="mb-12" data-pending-block>
-        <DraftPreview
-          title={first.title}
-          body={first.body}
-          meta={metaOf(first.payload)}
-          createdAt={first.created_at}
-          sample={!!first.is_sample}
-          href={systemInboxHref(slug, first)}
-          label={drafts.length > 1 ? `${plural(drafts.length, noun[0], noun[1])} waiting · next up` : "Waiting for your review"}
-        />
-      </section>
-    );
+  const href = systemInboxHref(slug, first);
   return (
     <section className="mb-12" data-pending-block>
       <L
@@ -91,6 +78,20 @@ export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[
           Review <ArrowRight size={14} aria-hidden />
         </span>
       </L>
+      {preview ? (
+        <div className="mt-3">
+          <DraftPreview
+            quiet
+            title={first.title}
+            body={first.body}
+            meta={metaOf(first.payload)}
+            createdAt={first.created_at}
+            sample={!!first.is_sample}
+            href={href}
+            label={`Preview · ${timeAgo(first.created_at)}`}
+          />
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -388,17 +389,29 @@ function ExperimentResults({ e }: { e: Experiment }) {
   );
 }
 
+/** The queued test whose next move (start it, or write its hooks) is the page's one primary action, if any. */
+export function primaryTest(experiments: Experiment[], can: { write: boolean; run: boolean; hookLab: boolean }) {
+  return (
+    experiments
+      .filter((e) => e.status === "draft" && (e.variants.length >= 2 ? can.write : can.run && can.hookLab))
+      .sort((a, b) => +new Date(b.created_at) - +new Date(a.created_at))[0]?.id ?? null
+  );
+}
+
 export function ExperimentBoard({
   experiments,
   hookLab,
   canWrite = false,
   canRun = false,
+  primaryId = null,
 }: {
   experiments: Experiment[];
   /** The agent that writes hooks for a test, when this workspace has one. */
   hookLab?: { id: string; name: string } | null;
   canWrite?: boolean;
   canRun?: boolean;
+  /** The one test whose next move is the page's primary action; every other control stays quiet. */
+  primaryId?: string | null;
 }) {
   // The same test proposed twice shows once.
   const seen = new Set<string>();
@@ -434,6 +447,7 @@ export function ExperimentBoard({
                     variants={e.variants.length}
                     results={e.results}
                     canWrite={canWrite}
+                    quiet={e.id !== primaryId}
                     hookLab={canRun && hookLab && e.status === "draft" ? { id: hookLab.id, name: hookLab.name, offer: testAngle(e) } : null}
                   />
                 ) : null}
@@ -511,9 +525,21 @@ const COV = { covered: { label: "Covered", tone: "accent" }, partial: { label: "
 
 const questionsOf = (d: Draft | undefined) => ((d?.payload as { questions?: Q[] } | undefined)?.questions ?? []).filter((q) => q.question);
 
+/** "Pending review": its own neutral, striped chip, so it never reads as a coverage colour. */
+function PendingChip({ className }: { className?: string }) {
+  return (
+    <span
+      className={cx("inline-flex h-5 items-center rounded-md px-1.5 text-[12px] font-medium text-ink-2 ring-1 ring-line-strong", className)}
+      style={{ backgroundImage: "repeating-linear-gradient(135deg, var(--subtle) 0 4px, transparent 4px 8px)" }}
+    >
+      Pending review
+    </span>
+  );
+}
+
 /**
  * Fact coverage: how many buyer questions the *approved* answer pack can answer. A pack still
- * waiting for review doesn't count until someone approves it; it shows as pending review.
+ * waiting for review shows its numbers as provisional until someone approves it.
  */
 export function Coverage({ approved, pending }: { approved: Draft | undefined; pending: Draft | undefined }) {
   const draft = approved ?? pending;
@@ -526,38 +552,40 @@ export function Coverage({ approved, pending }: { approved: Draft | undefined; p
     );
   const n = { covered: 0, partial: 0, missing: 0 };
   for (const q of qs) n[q.status] = (n[q.status] ?? 0) + 1;
-  const counted = !!approved;
-  const score = counted ? Math.round(((n.covered + 0.5 * n.partial) / qs.length) * 100) : null;
+  const provisional = !approved;
   const order = { missing: 0, partial: 1, covered: 2 } as const;
   const sorted = [...qs].sort((a, b) => order[a.status] - order[b.status]);
+  const { summary, rest } = splitSummary(sorted.map((q) => q.answer ?? ""));
   return (
     <>
-      <section className={cx(card, "mb-12 grid gap-6 p-6 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-10 sm:p-8")}>
+      <section className={cx(card, "mb-12 grid gap-6 p-6 sm:grid-cols-[auto_minmax(0,1fr)] sm:items-center sm:gap-10 sm:p-8")} data-coverage>
         <div>
-          {score !== null ? (
-            <p className="text-[52px] font-semibold leading-none tracking-[-0.03em] tnum">
-              {score}
-              <span className="text-[28px] text-ink-3">%</span>
-            </p>
-          ) : (
-            <p className="text-[52px] font-semibold leading-none tracking-[-0.03em] text-ink-3" aria-label="Not counted yet">—</p>
-          )}
-          <p className="mt-2 text-[13px] text-ink-3">Fact coverage</p>
+          <p className={cx("text-[44px] font-semibold leading-none tracking-[-0.03em] tnum", provisional && "text-ink-2")}>
+            {n.covered}
+            <span className="text-[24px] font-medium text-ink-3"> of {qs.length}</span>
+          </p>
+          <p className="mt-2 text-[13px] text-ink-3">buyer questions covered</p>
         </div>
         <div>
+          {provisional ? (
+            <p className="mb-2 flex flex-wrap items-center gap-2 text-[13px] text-ink-3">
+              <PendingChip />
+              Provisional — pack not yet approved
+            </p>
+          ) : null}
           <p className="max-w-md text-[14px] text-ink-2">
-            How many buyer questions your approved facts can answer. Partial answers count half.
-            {!counted ? " This pack is pending review, so it doesn\u2019t count yet." : pending ? " A newer pack is pending review." : ""}
+            {provisional
+              ? "Questions buyers ask AI assistants that this pack\u2019s facts can fully answer. It counts once you approve it."
+              : `Questions buyers ask AI assistants that your approved facts can fully answer.${pending ? " A newer pack is pending review." : ""}`}
           </p>
           <div className="mt-4 flex h-2 overflow-hidden rounded-full bg-subtle" aria-hidden>
-            <div className="bg-accent" style={{ width: `${(n.covered / qs.length) * 100}%` }} />
-            <div className="bg-warn" style={{ width: `${(n.partial / qs.length) * 100}%` }} />
+            <div className={provisional ? "bg-accent/60" : "bg-accent"} style={{ width: `${(n.covered / qs.length) * 100}%` }} />
+            <div className={provisional ? "bg-warn/60" : "bg-warn"} style={{ width: `${(n.partial / qs.length) * 100}%` }} />
           </div>
           <p className="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[13px] text-ink-3 tnum">
             <span className="flex items-center gap-1.5"><Dot tone="accent" /> {n.covered} covered</span>
             <span className="flex items-center gap-1.5"><Dot tone="warn" /> {n.partial} partial</span>
             <span className="flex items-center gap-1.5"><span className="inline-block size-1.5 rounded-full bg-line-strong" /> {n.missing} missing</span>
-            {!counted ? <span className="flex items-center gap-1.5 text-warn"><Dot tone="warn" /> pending review</span> : null}
           </p>
           <p className="mt-3 text-[13px] text-ink-3">Not yet measured in AI assistants.</p>
         </div>
@@ -566,7 +594,9 @@ export function Coverage({ approved, pending }: { approved: Draft | undefined; p
         title="Buyer questions"
         meta={
           draft.status === "pending" ? (
-            <span>Pending review · {timeAgo(draft.created_at)}</span>
+            <span className="flex items-center gap-2">
+              <PendingChip /> {timeAgo(draft.created_at)}
+            </span>
           ) : (
             <L href={inboxHref(draft)} className="hover:text-ink">
               From the approved answer pack · {timeAgo(draft.reviewed_at ?? draft.created_at)}
@@ -574,9 +604,17 @@ export function Coverage({ approved, pending }: { approved: Draft | undefined; p
           )
         }
       >
+        {summary ? (
+          <div className={cx(card, "mb-3 px-5 py-4")} data-company-summary>
+            <p className="text-[13px] font-medium text-ink-3">Company summary</p>
+            <p className="mt-1 max-w-[68ch] text-[14px] leading-relaxed text-ink-2">{summary}</p>
+            <p className="mt-1.5 text-[12.5px] text-ink-3">Every answer opens with this. Below, only what each answer adds.</p>
+          </div>
+        ) : null}
         <ul className={cx(card, "divide-y divide-line overflow-hidden")}>
           {sorted.map((q, i) => {
             const c = COV[q.status];
+            const own = summary ? rest[i] : q.answer;
             return (
               <li key={i}>
                 <details className="group">
@@ -586,7 +624,13 @@ export function Coverage({ approved, pending }: { approved: Draft | undefined; p
                     <ChevronDown size={14} aria-hidden className="shrink-0 text-ink-3 transition-transform group-open:rotate-180 motion-reduce:transition-none" />
                   </summary>
                   <div className="space-y-2 px-5 pb-4 text-[14px] text-ink-2">
-                    {q.answer ? <p className="leading-relaxed">{q.answer}</p> : <p className="text-ink-3">Your facts don&rsquo;t answer this yet.</p>}
+                    {own ? (
+                      <p className="leading-relaxed">{own}</p>
+                    ) : q.answer ? (
+                      <p className="text-ink-3">The company summary answers this on its own.</p>
+                    ) : (
+                      <p className="text-ink-3">Your facts don&rsquo;t answer this yet.</p>
+                    )}
                     {q.missing_facts?.length ? (
                       <p className="text-[13px]">
                         <span className="text-ink-3">Facts to add: </span>
@@ -658,7 +702,7 @@ export function FirstRun({
   canLoadSamples,
 }: {
   agentName: string;
-  readiness: { signals: number; need: number; days: number; ready: boolean; reads: "signals" | "metrics" } | null;
+  readiness: { signals: number; need: number; days: number; ready: boolean; reads: "signals" | "metrics"; reason?: string | null } | null;
   noun: string;
   /** What the agent turns signals into, one sentence. */
   promise: string;
@@ -670,15 +714,16 @@ export function FirstRun({
     <section className="mb-12 rounded-xl border border-dashed border-line-strong px-6 py-8 sm:px-8">
       <div className="max-w-lg">
         <h2 className="text-[14px] font-semibold text-ink">
-          {ready ? `Ready to draft its first ${noun}` : n ? `Almost ready: ${plural(n, "signal")} so far` : `Give ${agentName} something to read`}
+          {ready ? `Ready to draft its first ${noun}` : `Give ${agentName} something to read`}
         </h2>
         <p className="mt-1 text-[14px] leading-relaxed text-ink-2">
           {promise}{" "}
           {ready
             ? `It has ${plural(n, "signal")} from the last ${readiness?.days ?? 7} days to work from. Run it, then approve what it drafts.`
-            : readiness!.reads === "metrics"
-              ? `It reads the last ${readiness!.days} days of metrics and signals, and there are none yet. Add signals, or send metrics from your stack with an API key.`
-              : `It drafts from the last ${readiness!.days} days and needs at least ${readiness!.need} signals. Paste call notes, tickets, reviews or churn reasons.`}
+            : // What's missing is said once, from readiness, in the agent line above; here only what to do about it.
+              readiness!.reads === "metrics"
+              ? "Send metric events tagged by angle from your stack with an API key, then run it."
+              : "Paste call notes, tickets, reviews or churn reasons, then run it."}
         </p>
         {canLoadSamples ? (
           <div className="mt-5">
