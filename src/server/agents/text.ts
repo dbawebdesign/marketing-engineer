@@ -182,3 +182,13 @@ export function mentionsPhrase(sentence: string, words: string[]): boolean {
   const have = sentence.toLowerCase().split(/[^a-z0-9']+/);
   return words.every((w) => have.some((h) => h === w || h === `${w}s` || h === `${w}es` || (w.endsWith("s") && h === w.slice(0, -1))));
 }
+
+/**
+ * The test phrase of the approved market memo ("## Test this week\n**Lead with drive-time report.**"),
+ * or null when the memo names no test with content words.
+ */
+export function memoTestPhrase(memo: string | null | undefined): string | null {
+  const m = /##\s*Test this week\s*\n+\s*\*\*(.+?)\*\*/i.exec(memo ?? "");
+  const phrase = m?.[1]?.trim().replace(/[.:;,]+$/, "").trim() ?? "";
+  return phrase && phraseWords(phrase).length ? phrase : null;
+}

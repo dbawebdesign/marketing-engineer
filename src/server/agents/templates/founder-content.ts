@@ -3,7 +3,7 @@ import type { AgentTemplate, DraftInput, RunContext } from "../types";
 import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
-import { clip, LOSS_WORDS, sentences, stripLabel, tokens, topPhrases } from "../text";
+import { clip, LOSS_WORDS, memoTestPhrase, mentionsPhrase, phraseWords, sentences, stripLabel, tokens, topPhrases } from "../text";
 import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf, words } from "./guardrails";
 import { countBySource, draftTitle, fromSignals, meta, shippable } from "../format";
 
@@ -68,7 +68,7 @@ const MONEY = /\$\s?\d[\d,]{2,}/;
 const OWN_WORDS = /\bwe (know|just|can't|cannot|lose|need)\b|\bour\b.*\b(leak|biggest)\b/i;
 
 const SOURCE_NOUN: Record<string, string> = {
-  crm_note: "a demo request", review: "a review", social: "a public post", survey: "a survey", sales_call: "a sales call", support_ticket: "a support ticket", churn_note: "an exit call", interview: "an interview",
+  crm_note: "a demo request", review: "a review", social: "a public post", survey: "a survey", sales_call: "a sales call", support_ticket: "a support ticket", churn_note: "a churn note", interview: "an interview",
 };
 
 /**
@@ -91,8 +91,25 @@ export function postable(s: SignalLite) {
   return ["crm_note", "review", "social", "survey"].includes(s.source) && !s.metadata?.trigger && Boolean(findSentence(s, OWN_WORDS));
 }
 
+/** Sample (demo) signals carry `is_sample`; only they get the worded sample-business copy. */
+const isSample = (s: SignalLite) => Boolean((s as SignalLite & { is_sample?: boolean }).is_sample);
+
+/** The approved memo's test phrase ("Lead with drive-time report"), if the memo names one. */
+export function memoPhraseOf(rc: Pick<RunContext, "docs">): string | null {
+  return memoTestPhrase(rc.docs["customer-truth/what-the-market-is-telling-us"]?.content);
+}
+
+/** Signals that mention the memo's test phrase first, the rest after, each group in its original order. */
+export function memoFirst(rc: Pick<RunContext, "docs" | "signals">): SignalLite[] {
+  const phrase = memoPhraseOf(rc);
+  if (!phrase) return rc.signals;
+  const words = phraseWords(phrase);
+  const hit = (s: SignalLite) => mentionsPhrase(`${s.title} ${s.content}`.replace(/-/g, " "), words);
+  return [...rc.signals.filter(hit), ...rc.signals.filter((s) => !hit(s))];
+}
+
 function offline(rc: RunContext): Out {
-  const sigs = rc.signals;
+  const sigs = memoFirst(rc);
   const posts: Post[] = [];
   const used = new Set<string>();
   const calls = sigs.filter((s) => s.source === "sales_call");
@@ -168,7 +185,7 @@ function offline(rc: RunContext): Out {
       platform: "x",
       title: leak ? "The leak buyers can't count" : "A buyer, in their own words",
       hook: `"${said.charAt(0).toUpperCase()}${said.slice(1).replace(/\.$/, "")}."`,
-      body: `${t ? `A ${t}-tech shop` : "A contractor"} wrote that in ${SOURCE_NOUN[own.s.source] ?? "a note"} this week.${leak ? "\n\nYou can't fix a leak you can't count. Count it first." : ""}`,
+      body: `${t ? `A ${t}-tech shop` : "A contractor"} wrote that in ${SOURCE_NOUN[own.s.source] ?? "a note"}${isSample(own.s) ? " this week" : ""}.${leak ? "\n\nYou can't fix a leak you can't count. Count it first." : ""}`,
       insight: `A buyer wrote: “${clip(said.charAt(0).toUpperCase() + said.slice(1), 220)}”`,
       angle: leak ? "make the leak visible" : "the buyer's own words",
       evidence: [{ signal_id: own.s.id, quote: own.q }],
@@ -181,6 +198,26 @@ function offline(rc: RunContext): Out {
     .filter((s) => s.source === "churn_note" && !used.has(s.id))
     .sort((a, b) => Number(/if we had|would have/i.test(b.content)) - Number(/if we had|would have/i.test(a.content)))[0];
   if (churn) {
+    const ss = sentences(churn.content).map(stripLabel);
+    const why = ss.find((x) => /didn't see|never|only/i.test(x)) ?? ss[0]!;
+    const regret = ss.find((x) => /if we had|would have/i.test(x));
+    const aboutMoney = /revenue|money|upside/i.test(churn.content);
+    if (!isSample(churn)) {
+      // A real churn note: no invented date, call or lesson. Name the source as it is and quote it.
+      const why = ss.find((x) => /\bbecause\b/i.test(x)) ?? ss.find((x) => /didn't see|never|only/i.test(x)) ?? ss[0]!;
+      posts.push({
+        platform: "linkedin",
+        title: "Why a customer left",
+        hook: `We lost a customer. Their churn note said why.`,
+        body: [retell(bare(why), churn), regret ? `Then the line that stuck: "${bare(regret).replace(/^If/, "if").replace(/^./, (c) => c.toUpperCase())}"` : null, `That's on us.`].filter(Boolean).join("\n\n"),
+        insight: `A churn note said: “${clip(bare(why), 220)}”`,
+        angle: "",
+        evidence: [{ signal_id: churn.id, quote: why }, ...(regret ? [{ signal_id: churn.id, quote: regret }] : [])],
+      });
+      used.add(churn.id);
+    }
+  }
+  if (churn && isSample(churn)) {
     const ss = sentences(churn.content).map(stripLabel);
     const why = ss.find((x) => /didn't see|never|only/i.test(x)) ?? ss[0]!;
     const regret = ss.find((x) => /if we had|would have/i.test(x));
@@ -313,7 +350,8 @@ ${renderDocs(rc, READS)}
 
 ${renderBanned(parseBanned(rc.docs["outbound/banned-language"], rc.docs["content/founder-voice"]))}
 
-How to write these:
+${memoPhraseOf(rc) ? `This week's approved memo tests "${memoPhraseOf(rc)}". Prefer signals that mention it.\n\n` : ""}How to write these:
+- Never invent a date, a channel or a conversation the signal doesn't state (no "this month", no "exit call" for a written note).
 - Each post starts from ONE signal-backed insight. Cite the signals it rests on, with verbatim quotes.
 - Write in the founder's voice described above. Reuse the rhythm of the posts they love; never copy them.
 - Describe customers by size and trade ("a 27-tech commercial shop"), never by name.

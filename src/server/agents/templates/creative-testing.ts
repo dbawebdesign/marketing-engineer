@@ -5,7 +5,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { keepSupported } from "../evidence";
 import { bullets, findBanned, findSentence, parseBanned, renderBanned, techsOf } from "./guardrails";
 import { countBySource, draftTitle, fromSignals, meta } from "../format";
-import { mentionsPhrase, phraseWords, quoteLine, sentences, stripLabel } from "../text";
+import { memoTestPhrase, mentionsPhrase, phraseWords, quoteLine, sentences, stripLabel } from "../text";
 
 const READS = ["creative/offers", "customer-truth/what-the-market-is-telling-us", "outbound/approved-angles", "content/winning-hooks", "content/founder-voice", "outbound/banned-language"];
 const CHANNELS = ["paid_social", "linkedin", "x", "search", "landing_page", "email", "outbound", "other"] as const;
@@ -45,7 +45,8 @@ function parseOffer(rc: RunContext): { name: string; detail: string } {
   const input = typeof rc.input.offer === "string" ? rc.input.offer.trim() : "";
   if (input) return { name: input.split(/[:.]/)[0]!.trim(), detail: input };
   const first = bullets(rc.docs["creative/offers"])[0];
-  if (!first) return { name: "Our main offer", detail: "" };
+  // The placeholder only names the sample business's offer; a real tenant with no offer gets none.
+  if (!first) return { name: rc.signals.some(isSample) ? "Our main offer" : "", detail: "" };
   const [name, ...rest] = first.split(/:\s+/);
   return { name: name!.trim(), detail: rest.join(": ").trim() };
 }
@@ -65,7 +66,14 @@ function find(sigs: SignalLite[], re: RegExp) {
  * business (follow-up quotes from the truck), so they are only written for sample signals; a real
  * tenant gets hooks quoted verbatim from its own signals and nothing else.
  */
-const isSample = (s: SignalLite) => Boolean((s as SignalLite & { is_sample?: boolean }).is_sample);
+function isSample(s: SignalLite) {
+  return Boolean((s as SignalLite & { is_sample?: boolean }).is_sample);
+}
+
+/** The approved memo's current test phrase, used when a run names no test of its own. */
+export function memoPhraseOf(rc: Pick<RunContext, "docs">): string | null {
+  return memoTestPhrase(rc.docs["customer-truth/what-the-market-is-telling-us"]?.content);
+}
 
 /** The test phrase a run was started for ("Run Hook lab on this" on an experiment), if any. */
 export function testPhraseOf(rc: Pick<RunContext, "input">): string | null {
@@ -155,6 +163,20 @@ function offline(rc: RunContext): Out {
       angles,
       ads: [],
       notes: "Every hook is a verbatim quote that uses the test phrase. Run 2-3 per angle first.",
+    };
+  }
+  // No explicit test: default to the approved memo's test, when buyers' own lines say it.
+  const memo = memoPhraseOf(rc);
+  const memoAngles = memo ? phraseBatch(rc, memo) : [];
+  if (memo && memoAngles.length) {
+    return {
+      offer: offer.detail ? `${offer.name}: ${offer.detail}` : offer.name || memo,
+      hypothesis: `Hooks that say "${phraseCore(memo)}" in the buyer's own words (this week's memo test), tested against each other on demo requests per click.`,
+      channel: "paid_social",
+      metric: "demo_request",
+      angles: memoAngles,
+      ads: [],
+      notes: `Built on the approved memo's test "${memo}". Every hook is a verbatim quote that uses it. Run 2-3 per angle first.`,
     };
   }
   const isCalc = /calculator/i.test(offer.name);
@@ -343,8 +365,8 @@ ${renderDocs(rc, READS)}
 
 ${renderBanned(parseBanned(rc.docs["outbound/banned-language"], rc.docs["content/founder-voice"]))}
 
-The offer to test: **${offer.name}**${offer.detail ? `: ${offer.detail}` : ""}
-${testPhraseOf(rc) ? `\nThis batch is for the test "${testPhraseOf(rc)}". Every hook must use the words "${phraseCore(testPhraseOf(rc)!)}", built from signal quotes that contain them. If no signal says it, return no angles.\n` : ""}
+${offer.name ? `The offer to test: **${offer.name}**${offer.detail ? `: ${offer.detail}` : ""}` : "No offer is named in the Offers doc: do not invent one; set offer to an empty string."}
+${!testPhraseOf(rc) && memoPhraseOf(rc) ? `\nThis week's approved memo tests "${memoPhraseOf(rc)}". Lead with angles whose signal quotes use those words.\n` : ""}${testPhraseOf(rc) ? `\nThis batch is for the test "${testPhraseOf(rc)}". Every hook must use the words "${phraseCore(testPhraseOf(rc)!)}", built from signal quotes that contain them. If no signal says it, return no angles.\n` : ""}
 How to work:
 - Start from the truth file's recommended test and buyer language, then find 5 genuinely different angles (loss, invisible problem, broken process, aspiration, proof, etc.). Each angle cites the signals behind it.
 - 4 hooks per angle. Under 15 words. Use the buyer's words, numbers that appear in the signals, never invented stats.
@@ -423,13 +445,13 @@ ${angles
     );
     return {
       substantive: true,
-      summary: `${nHooks} ${nHooks === 1 ? "hook" : "hooks"} and ${ads.length} ${ads.length === 1 ? "ad concept" : "ad concepts"} across ${angles.length} ${angles.length === 1 ? "angle" : "angles"} for "${o.offer.split(":")[0]}".`,
+      summary: `${nHooks} ${nHooks === 1 ? "hook" : "hooks"} and ${ads.length} ${ads.length === 1 ? "ad concept" : "ad concepts"} across ${angles.length} ${angles.length === 1 ? "angle" : "angles"}${o.offer.split(":")[0]!.trim() ? ` for "${o.offer.split(":")[0]!.trim()}"` : ""}.`,
       stats: { angles: angles.length, hooks: nHooks, ads: ads.length, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
       drafts: [
         {
           type: "creative_batch",
           // Without a named offer, name the batch after its lead angle rather than "Our main offer".
-          title: draftTitle(body, /^our main offer$/i.test((offerName ?? "").trim()) && angles[0] ? `Hooks: ${angles[0].name}` : offerName),
+          title: draftTitle(body, (/^our main offer$/i.test((offerName ?? "").trim()) || !(offerName ?? "").trim()) && angles[0] ? `Hooks: ${angles[0].name}` : offerName),
           body,
           payload: {
             offer: o.offer,
