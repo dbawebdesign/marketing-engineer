@@ -1,4 +1,4 @@
-import { Inbox as InboxIcon } from "lucide-react";
+import { ArrowLeft, Inbox as InboxIcon } from "lucide-react";
 import { requireCtx } from "@/server/web/session";
 import { listDrafts, getDraft } from "@/server/services/drafts";
 import { SYSTEM_META, type System } from "@/server/agents/types";
@@ -74,6 +74,8 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       ) : (
         <div className="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
           <InboxKeys ids={drafts.map((d) => d.id)} current={selected?.id ?? null} tab={tab} />
+          {/* Small screens show the list or the open draft, never both stacked. */}
+          <div className={cx("min-w-0", sp.d && "hidden lg:block")}>
           <InboxList
             tab={tab}
             selectedId={selected?.id ?? null}
@@ -87,7 +89,11 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
               receipts: d.evidence?.length ?? 0,
             }))}
           />
-          <div className="min-w-0">
+          </div>
+          <div className={cx("min-w-0", !sp.d && "hidden lg:block")}>
+            <L href={`/inbox?tab=${tab}`} className="mb-4 inline-flex items-center gap-1 text-sm text-ink-3 hover:text-ink lg:hidden">
+              <ArrowLeft size={14} /> All drafts
+            </L>
             {selected ? (
               <ReviewPane
                 nextId={nextId}
