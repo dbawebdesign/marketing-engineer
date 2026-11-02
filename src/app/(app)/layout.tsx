@@ -10,6 +10,7 @@ import { CommandPalette } from "@/components/palette";
 import { Toaster } from "@/components/toast";
 import { Kbd } from "@/components/ui";
 import { PaletteTrigger } from "@/components/palette-trigger";
+import { EmbedBridge } from "@/components/embed-bridge";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireCtx();
@@ -30,6 +31,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </div>
         {palette}
         <Toaster />
+        <EmbedBridge />
       </BaseProvider>
     );
   }

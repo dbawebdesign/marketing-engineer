@@ -6,6 +6,7 @@ import { reviewAction } from "@/app/(app)/actions";
 import { Badge, Button, Kbd, Textarea, cx, timeAgo } from "./ui";
 import { toast } from "./toast";
 import { useBase } from "./nav";
+import { emitEmbed } from "./embed-bridge";
 
 export type ReviewDraft = {
   id: string;
@@ -45,6 +46,7 @@ export function ReviewPane({ draft, nextId }: { draft: ReviewDraft; nextId: stri
         body: body !== draft.body ? body : undefined,
       });
       if (!r.ok) return toast.error(r.error);
+      emitEmbed(decision === "approve" ? "draft.approved" : "draft.rejected", { id: draft.id, title: draft.title });
       toast.ok(decision === "approve" ? (r.data?.effect ?? "Approved") : remember && feedback.trim() ? "Rejected. The agent will remember why." : "Rejected");
       router.push(nextId ? `${base}/inbox?d=${nextId}` : `${base}/inbox`);
       router.refresh();

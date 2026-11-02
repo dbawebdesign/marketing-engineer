@@ -18,6 +18,8 @@ const config: NextConfig = {
       // App pages may not be framed, except the /embed surface (frame-ancestors set per tenant in middleware).
       { source: "/((?!embed).*)", headers: [...securityHeaders, { key: "X-Frame-Options", value: "DENY" }] },
       { source: "/embed/:path*", headers: securityHeaders },
+      // The start URL carries a (single-use) token: never leak it via Referer.
+      { source: "/embed/start", headers: [{ key: "Referrer-Policy", value: "no-referrer" }] },
     ];
   },
 };
