@@ -1,10 +1,14 @@
 "use client";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Check, Copy, Pencil, X } from "lucide-react";
+import { ArrowUpRight, Check, Copy, Info, Pencil, X } from "lucide-react";
 import { reviewAction } from "@/app/(app)/actions";
 import { undoReviewAction } from "@/app/(app)/actions-extra";
 import { Badge, Button, Kbd, Textarea, cx, plural, timeAgo } from "./ui";
+import { AutoTextarea } from "./auto-textarea";
+import { Markdown } from "./markdown";
+import { draftCommands } from "./shortcuts";
+import { L } from "./nav";
 import { toast } from "./toast";
 import { useBase } from "./nav";
 import { emitEmbed } from "./embed-bridge";
@@ -20,6 +24,10 @@ export type ReviewDraft = {
   feedback: string | null;
   /** Approvals of this type have no side effect, so they can be undone for a moment. */
   undoable: boolean;
+  /** Where an approval's effect shows up, e.g. "/s/truth". */
+  effect_href: string;
+  /** Set when this downstream draft was written while a market memo still waits for review. */
+  pending_memo_id?: string | null;
   evidence: { signal_id: string; quote: string; source?: string; url?: string | null; account?: string | null; occurred_at?: string }[];
   html: React.ReactNode;
 };
@@ -32,6 +40,15 @@ export function isTypingTarget(el: EventTarget | null) {
   if (!t || !t.tagName) return false;
   if (t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "SELECT") return true;
   return t.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes((t as HTMLInputElement).type);
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    toast.ok("Copied", { key: "copy" });
+  } catch {
+    toast.error("Couldn't copy. Select the text and copy it instead.", { key: "copy" });
+  }
 }
 
 /** Shortcuts are off while a dialog (command palette, sheet) is open on top of the page. */
@@ -50,6 +67,7 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
   const base = useBase();
   const mod = useModKey();
   const [mode, setMode] = useState<"view" | "edit" | "reject">("view");
+  const [preview, setPreview] = useState(false);
   const [body, setBody] = useState(draft.body);
   const [feedback, setFeedback] = useState("");
   const [remember, setRemember] = useState(true);
@@ -64,6 +82,7 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
 
   useEffect(() => {
     setMode("view");
+    setPreview(false);
     setBody(draft.body);
     setFeedback("");
   }, [draft.id, draft.body]);
@@ -80,23 +99,33 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
       });
       if (!r.ok) return void toast.error(r.error);
       emitEmbed(decision === "approve" ? "draft.approved" : "draft.rejected", { id: draft.id, title: draft.title });
-      const text = decision === "approve" ? (r.data?.effect ?? "Approved") : teach ? `Rejected. ${agent} will remember why.` : "Rejected";
+      const text =
+        decision === "approve"
+          ? (r.data?.effect ?? `Approved. Saved to ${draft.system_label}.`)
+          : teach
+            ? `Rejected. ${agent} will remember why.`
+            : "Rejected";
       const id = draft.id;
+      const href = draft.effect_href;
+      // Undo when the review can be taken back; otherwise a way to see where the approval went.
       toast.ok(text, {
+        key: "review",
         action: draft.undoable
           ? {
               label: "Undo",
               run: async () => {
                 const u = await undoReviewAction(id);
-                if (!u.ok) return void toast.error(u.error);
-                toast.ok("Back in your queue");
+                if (!u.ok) return void toast.error(u.error, { key: "review" });
+                toast.ok("Back in your queue", { key: "review" });
                 router.push(`${base}/inbox?d=${id}`, { scroll: false });
                 router.refresh();
               },
             }
-          : undefined,
+          : decision === "approve"
+            ? { label: "View", run: () => router.push(base + href) }
+            : undefined,
       });
-      router.push(nextId ? `${base}/inbox?d=${nextId}` : `${base}/inbox`, { scroll: false });
+      router.push(nextId ? `${base}/inbox?d=${nextId}` : `${base}/inbox?done=${id}`, { scroll: false });
       router.refresh();
     });
   };
@@ -138,8 +167,22 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
   }, []);
 
   useEffect(() => {
-    if (mode !== "view") requestAnimationFrame(focusField);
-  }, [mode]);
+    if (mode !== "view" && !preview) requestAnimationFrame(focusField);
+  }, [mode, preview]);
+
+  // Let the command palette act on this draft ("This draft" group).
+  const cmds = useRef({ decide, setMode, body });
+  cmds.current = { decide, setMode, body };
+  useEffect(() => {
+    if (!editable) return;
+    return draftCommands.set({
+      title: draft.title,
+      approve: () => cmds.current.decide("approve"),
+      edit: () => cmds.current.setMode("edit"),
+      reject: () => cmds.current.setMode("reject"),
+      copy: () => void copyText(cmds.current.body),
+    });
+  }, [editable, draft.id, draft.title]);
 
   return (
     <article className="animate-in" key={draft.id}>
@@ -148,6 +191,15 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
           {draft.system_label} · {draft.agent_name ?? "Agent"} · {timeAgo(draft.created_at)}
         </p>
         <h2 className="mt-1 text-xl font-semibold tracking-tight text-pretty">{draft.title}</h2>
+        {draft.pending_memo_id && editable ? (
+          <p className="mt-2 flex items-center gap-1.5 text-[13px] text-ink-3">
+            <Info size={13} className="shrink-0" />
+            <span className="min-w-0 truncate">Built before this week&rsquo;s market memo was approved.</span>
+            <L href={`/inbox?d=${draft.pending_memo_id}`} scroll={false} className="shrink-0 text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink">
+              Review memo
+            </L>
+          </p>
+        ) : null}
         {draft.status !== "pending" ? (
           <div className="mt-2 flex items-center gap-2">
             <Badge tone={draft.status === "rejected" ? "danger" : "accent"}>{draft.status}</Badge>
@@ -157,9 +209,45 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
       </header>
 
       {mode === "edit" ? (
-        <Textarea data-review-field aria-label="Edit draft" value={body} onChange={(e) => setBody(e.target.value)} rows={22} className="font-mono text-[13px]" />
+        <div data-review-editing className="overflow-hidden rounded-xl bg-surface ring-1 ring-line focus-within:ring-2 focus-within:ring-accent">
+          <div className="flex items-center justify-between gap-3 border-b border-line px-3 py-1.5">
+            <div role="tablist" aria-label="Editor view" className="flex rounded-md bg-subtle p-0.5 text-[12.5px]">
+              {(["Write", "Preview"] as const).map((t) => {
+                const on = (t === "Preview") === preview;
+                return (
+                  <button
+                    key={t}
+                    type="button"
+                    role="tab"
+                    aria-selected={on}
+                    onClick={() => setPreview(t === "Preview")}
+                    className={cx("rounded px-2.5 py-1", on ? "bg-surface font-medium text-ink shadow-soft" : "text-ink-3 hover:text-ink")}
+                  >
+                    {t}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="hidden text-xs text-ink-3 sm:inline">Markdown works: **bold**, - lists, # headings</span>
+          </div>
+          {preview ? (
+            <div className="min-h-[240px] p-5 sm:p-6">
+              <Markdown>{body}</Markdown>
+            </div>
+          ) : (
+            <AutoTextarea
+              bare
+              data-review-field
+              aria-label="Edit draft"
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              spellCheck
+              className="min-h-[240px] px-5 py-4 text-[15px] leading-[1.7] sm:px-6 sm:py-5"
+            />
+          )}
+        </div>
       ) : (
-        <div className="rounded-xl bg-surface p-5 ring-1 ring-line sm:p-6">{body === draft.body ? draft.html : <pre className="whitespace-pre-wrap font-sans text-[15px] leading-relaxed">{body}</pre>}</div>
+        <div className="rounded-xl bg-surface p-5 ring-1 ring-line sm:p-6">{body === draft.body ? draft.html : <Markdown>{body}</Markdown>}</div>
       )}
 
       {editable ? (
@@ -251,10 +339,7 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
                 variant="ghost"
                 className="ml-auto"
                 aria-label="Copy draft"
-                onClick={async () => {
-                  await navigator.clipboard.writeText(body);
-                  toast.ok("Copied");
-                }}
+                onClick={() => copyText(body)}
               >
                 <Copy size={13} /> <span className="hidden sm:inline">Copy</span>
               </Button>
@@ -299,6 +384,7 @@ export function InboxKeys({ ids, current, tab }: { ids: string[]; current: strin
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || isTypingTarget(e.target) || overlayOpen()) return;
+      if (document.querySelector("[data-review-editing]")) return; // don't navigate away from an unsaved edit
       const k = e.key.toLowerCase();
       if (k !== "j" && k !== "k") return;
       const i = current ? ids.indexOf(current) : -1;

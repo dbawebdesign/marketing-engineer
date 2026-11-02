@@ -26,14 +26,20 @@ export type Draft = {
 
 const COLS = `d.id, d.run_id, d.agent_id, a.name agent_name, d.system, d.type, d.title, d.body, d.payload, d.evidence, d.status, d.feedback, d.reviewed_at, d.created_at`;
 
+/**
+ * Upstream first: the market memo feeds every other system, so a review queue reads
+ * in dependency order. Pending drafts sort by this, then newest.
+ */
+export const SYSTEM_ORDER = ["customer_truth", "growth_cockpit", "ai_search", "founder_content", "outbound_signal", "creative_testing"];
+
 export async function listDrafts(ctx: Ctx, opts: { status?: string; system?: string; limit?: number } = {}) {
   assertCan(ctx, "read");
   return withTenant(ctx.tenantId, async (tx) => {
     const r = await tx.query<Draft>(
       `select ${COLS} from drafts d left join agents a on a.id = d.agent_id
         where ($1::text is null or d.status = $1) and ($2::text is null or d.system = $2)
-        order by d.created_at desc limit $3`,
-      [opts.status ?? null, opts.system ?? null, Math.min(opts.limit ?? 50, 200)],
+        order by case when $1 = 'pending' then coalesce(array_position($4::text[], d.system), 99) else 0 end, d.created_at desc, d.id limit $3`,
+      [opts.status ?? null, opts.system ?? null, Math.min(opts.limit ?? 50, 200), SYSTEM_ORDER],
     );
     return r.rows;
   });
@@ -69,6 +75,8 @@ export async function reviewDraft(ctx: Ctx, id: string, raw: unknown) {
   assertCan(ctx, "drafts:review");
   const input = ReviewInput.parse(raw);
   if (input.decision === "reject" && input.remember && !input.feedback) throw badRequest("Say what was wrong so the agent can learn it.");
+  // Reviewers teach agents through rejections only: a correction becomes a standing rule.
+  if (input.remember && input.decision === "reject" && (input.feedback?.length ?? 0) > 2000) throw badRequest("Keep the reason under 2,000 characters so it works as a rule.");
   return withTenant(ctx.tenantId, async (tx) => {
     const r = await tx.query<Draft>(`select ${COLS} from drafts d left join agents a on a.id = d.agent_id where d.id = $1 for update of d`, [id]);
     const d = r.rows[0];
@@ -77,7 +85,7 @@ export async function reviewDraft(ctx: Ctx, id: string, raw: unknown) {
     const body = input.body ?? d.body;
     const status = input.decision === "approve" ? "approved" : "rejected";
     await tx.query(`update drafts set status=$2, body=$3, feedback=$4, reviewer_id=$5, reviewed_at=now() where id=$1`, [id, status, body, input.feedback ?? null, ctx.userId]);
-    if (input.remember && input.feedback && d.agent_id) await addRuleTx(tx, ctx, d.agent_id, input.feedback, "correction");
+    if (input.decision === "reject" && input.remember && input.feedback && d.agent_id) await addRuleTx(tx, ctx, d.agent_id, input.feedback, "correction");
     let effect: string | null = null;
     if (status === "approved") effect = await applyApproval(tx, ctx, { ...d, body });
     await audit(tx, ctx, `draft.${status}`, { type: "draft", id }, { edited: input.body !== undefined && input.body !== d.body, remembered: input.remember, effect });

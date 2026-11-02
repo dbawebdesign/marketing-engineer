@@ -3,6 +3,7 @@ import { assertCan, type Ctx } from "@/lib/ctx";
 import { badRequest, notFound } from "@/lib/errors";
 import { getTemplate } from "../agents/registry";
 import { audit } from "./audit";
+import { slugForSystem } from "@/lib/systems";
 
 /** Draft types whose approval has no side effect, so a review can be taken back. */
 export const UNDOABLE_TYPES = ["post", "outbound_message", "asset_idea", "ai_answer_pack"] as const;
@@ -100,4 +101,29 @@ export async function todayState(ctx: Ctx) {
     const f = facts.rows[0]!;
     return { active, finishedRun: f.finished_run, approvedMemo: f.approved_memo, contentDrafts: f.content_drafts, pendingMemoId: f.pending_memo };
   });
+}
+
+/** The oldest market memo still waiting for review: downstream drafts written after it were built without it. */
+export async function oldestPendingMemo(ctx: Ctx) {
+  assertCan(ctx, "read");
+  return withTenant(ctx.tenantId, async (tx) => {
+    const r = await tx.query<{ id: string; created_at: string }>(
+      `select id, created_at from drafts where type = 'market_memo' and status = 'pending' order by created_at, id limit 1`,
+    );
+    return r.rows[0] ?? null;
+  });
+}
+
+/** Where an approved draft's effect lands, as an app path. */
+export function effectHref(type: string, system: string) {
+  switch (type) {
+    case "market_memo":
+      return "/s/truth";
+    case "cockpit_memo":
+      return "/s/cockpit";
+    case "creative_batch":
+      return "/s/creative";
+    default:
+      return `/s/${slugForSystem(system)}`;
+  }
 }

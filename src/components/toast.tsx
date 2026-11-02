@@ -3,14 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { CircleCheck, CircleX } from "lucide-react";
 
 type Action = { label: string; run: () => void };
-type Opts = { action?: Action; duration?: number };
-type T = { id: number; text: string; tone: "ok" | "error"; action?: Action; duration: number };
+/** `key` names what a toast is about: a new toast with the same key replaces the old one. Defaults to the text. */
+type Opts = { action?: Action; duration?: number; key?: string };
+type T = { id: number; key: string; text: string; tone: "ok" | "error"; action?: Action; duration: number };
 
 let push: ((t: Omit<T, "id">) => void) | null = null;
+let drop: ((key: string) => void) | null = null;
 export const toast = {
-  ok: (text: string, opts: Opts = {}) => push?.({ text, tone: "ok", action: opts.action, duration: opts.duration ?? (opts.action ? 5000 : 3200) }),
-  error: (text: string, opts: Opts = {}) => push?.({ text, tone: "error", action: opts.action, duration: opts.duration ?? 6000 }),
+  ok: (text: string, opts: Opts = {}) => push?.({ key: opts.key ?? text, text, tone: "ok", action: opts.action, duration: opts.duration ?? (opts.action ? 6000 : 3200) }),
+  error: (text: string, opts: Opts = {}) => push?.({ key: opts.key ?? text, text, tone: "error", action: opts.action, duration: opts.duration ?? 6000 }),
+  dismiss: (key: string) => drop?.(key),
 };
+
+/** At most this many toasts on screen; the oldest goes first. */
+const MAX_VISIBLE = 2;
 
 const isTyping = (el: EventTarget | null) => {
   const t = el as HTMLElement | null;
@@ -31,14 +37,31 @@ export function Toaster() {
 
   useEffect(() => {
     let n = 0;
+    const clear = (gone: T[]) =>
+      gone.forEach((x) => {
+        clearTimeout(timers.current.get(x.id));
+        timers.current.delete(x.id);
+      });
     push = (t) => {
       const id = ++n;
-      setItems((xs) => [...xs.slice(-2), { ...t, id }]);
+      setItems((xs) => {
+        const kept = xs.filter((x) => x.key !== t.key);
+        const next = [...kept, { ...t, id }];
+        const over = next.slice(0, Math.max(next.length - MAX_VISIBLE, 0));
+        clear([...xs.filter((x) => x.key === t.key), ...over]);
+        return next.slice(-MAX_VISIBLE);
+      });
       timers.current.set(id, setTimeout(() => dismiss(id), t.duration));
     };
+    drop = (key) =>
+      setItems((xs) => {
+        clear(xs.filter((x) => x.key === key));
+        return xs.filter((x) => x.key !== key);
+      });
     const all = timers.current;
     return () => {
       push = null;
+      drop = null;
       all.forEach(clearTimeout);
     };
   }, []);

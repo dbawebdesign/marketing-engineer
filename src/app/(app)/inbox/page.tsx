@@ -3,11 +3,14 @@ import { requireCtx } from "@/server/web/session";
 import { listDrafts, getDraft } from "@/server/services/drafts";
 import { SYSTEM_META, type System } from "@/server/agents/types";
 import { isUuid } from "@/lib/db";
+import { slugForSystem } from "@/lib/systems";
 import { L } from "@/components/nav";
 import { Markdown } from "@/components/markdown";
 import { ReviewPane, InboxKeys } from "@/components/review-pane";
-import { Empty, Kbd, cx, plural, timeAgo } from "@/components/ui";
-import { isUndoable, recentRejectionReasons } from "@/server/services/review-extra";
+import { InboxList } from "@/components/inbox-list";
+import { Empty, cx } from "@/components/ui";
+import { effectHref, isUndoable, oldestPendingMemo, recentRejectionReasons } from "@/server/services/review-extra";
+import { InboxNextStep } from "./next-step";
 
 export const metadata = { title: "Inbox" };
 
@@ -29,7 +32,7 @@ const TABS = [
   { key: "rejected", label: "Rejected" },
 ] as const;
 
-export default async function InboxPage({ searchParams }: { searchParams: Promise<{ d?: string; tab?: string }> }) {
+export default async function InboxPage({ searchParams }: { searchParams: Promise<{ d?: string; tab?: string; done?: string }> }) {
   const ctx = await requireCtx();
   const sp = await searchParams;
   const tab = TABS.find((t) => t.key === sp.tab)?.key ?? "pending";
@@ -38,8 +41,9 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const selected = selectedId ? (drafts.find((d) => d.id === selectedId) ?? (await getDraft(ctx, selectedId).catch(() => null))) : null;
   const idx = selected ? drafts.findIndex((d) => d.id === selected.id) : -1;
   const nextId = drafts[idx + 1]?.id ?? (idx > 0 ? drafts[idx - 1]?.id : null) ?? null;
-  const q = (extra: string) => `/inbox?tab=${tab}${extra}`;
   const reasons = selected?.agent_id && selected.status === "pending" ? await recentRejectionReasons(ctx, selected.agent_id).catch(() => []) : [];
+  const memo = selected?.status === "pending" && selected.system !== "customer_truth" ? await oldestPendingMemo(ctx) : null;
+  const builtBeforeMemo = memo && selected && new Date(selected.created_at) >= new Date(memo.created_at) ? memo.id : null;
 
   return (
     <div className="animate-in">
@@ -62,34 +66,27 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
       </div>
 
       {!drafts.length && !selected ? (
-        <Empty icon={<InboxIcon size={22} />} title={tab === "pending" ? "Inbox zero" : `Nothing ${tab} yet`}>
-          {tab === "pending" ? "When an agent finishes a run, its drafts land here for your approval." : null}
-        </Empty>
+        tab === "pending" ? (
+          <InboxNextStep doneId={isUuid(sp.done) ? sp.done : null} />
+        ) : (
+          <Empty icon={<InboxIcon size={22} />} title={`Nothing ${tab} yet`} />
+        )
       ) : (
         <div className="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
           <InboxKeys ids={drafts.map((d) => d.id)} current={selected?.id ?? null} tab={tab} />
-          <ul className="space-y-1 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto">
-            {drafts.map((d) => (
-              <li key={d.id} data-draft={d.id}>
-                <L
-                  href={q(`&d=${d.id}`)}
-                  scroll={false}
-                  className={cx("block rounded-xl px-3.5 py-3 transition-colors", d.id === selected?.id ? "bg-surface shadow-soft ring-1 ring-line" : "hover:bg-subtle")}
-                >
-                  <p className="line-clamp-2 text-[14px] font-medium leading-snug">{d.title}</p>
-                  <p className="mt-1 text-xs text-ink-3">
-                    {SYSTEM_META[d.system as System]?.short ?? d.system} · {timeAgo(d.created_at)}
-                    {d.evidence?.length ? ` · ${plural(d.evidence.length, "receipt")}` : ""}
-                  </p>
-                </L>
-              </li>
-            ))}
-            {tab === "pending" && drafts.length > 1 ? (
-              <li className="px-3.5 pt-3 text-xs text-ink-3">
-                <Kbd>J</Kbd> <Kbd>K</Kbd> to move
-              </li>
-            ) : null}
-          </ul>
+          <InboxList
+            tab={tab}
+            selectedId={selected?.id ?? null}
+            rows={drafts.map((d) => ({
+              id: d.id,
+              title: d.title,
+              system: d.system,
+              systemShort: SYSTEM_META[d.system as System]?.short ?? d.system,
+              systemHref: `/s/${slugForSystem(d.system)}`,
+              created_at: d.created_at,
+              receipts: d.evidence?.length ?? 0,
+            }))}
+          />
           <div className="min-w-0">
             {selected ? (
               <ReviewPane
@@ -105,6 +102,8 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                   agent_name: selected.agent_name,
                   created_at: selected.created_at,
                   undoable: isUndoable(selected.type),
+                  effect_href: effectHref(selected.type, selected.system),
+                  pending_memo_id: builtBeforeMemo,
                   evidence: selected.evidence ?? [],
                   html: <Markdown>{withoutTitleH1(selected.body, selected.title)}</Markdown>,
                 }}
