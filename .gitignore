@@ -6,3 +6,4 @@ node_modules
 next-env.d.ts
 coverage
 public/embed/v1.js
+.next-build

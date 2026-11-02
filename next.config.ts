@@ -12,6 +12,7 @@ const config: NextConfig = {
   devIndicators: false,
   reactStrictMode: true,
   output: "standalone",
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   serverExternalPackages: ["@node-rs/argon2", "pg"],
   async headers() {
     return [
