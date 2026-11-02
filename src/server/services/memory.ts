@@ -1,4 +1,4 @@
-import { withTenant, type Tx } from "@/lib/db";
+import { sys, withTenant, type Tx } from "@/lib/db";
 import { assertCan, type Ctx } from "@/lib/ctx";
 import { badRequest, notFound } from "@/lib/errors";
 import { audit } from "./audit";
@@ -35,15 +35,42 @@ export async function getDoc(ctx: Ctx, key: string) {
   });
 }
 
-export async function docHistory(ctx: Ctx, key: string) {
+export type DocVersion = {
+  version: number;
+  author_kind: string;
+  note: string | null;
+  created_at: string;
+  content: string;
+  /** The person behind the version: the editor, or for an agent's doc, whoever approved it. */
+  person: string | null;
+  /** For an approved agent draft, the agent that wrote it. */
+  agent: string | null;
+};
+
+export async function docHistory(ctx: Ctx, key: string): Promise<DocVersion[]> {
   assertCan(ctx, "read");
-  return withTenant(ctx.tenantId, async (tx) => {
-    const r = await tx.query<{ version: number; author_kind: string; note: string | null; created_at: string; content: string }>(
-      `select v.version, v.author_kind, v.note, v.created_at, v.content from memory_doc_versions v join memory_docs d on d.id = v.doc_id where d.key = $1 order by v.version desc limit 50`,
+  const rows = await withTenant(ctx.tenantId, async (tx) => {
+    const r = await tx.query<Omit<DocVersion, "person"> & { author_id: string | null }>(
+      `select v.version, v.author_kind, v.author_id, v.note, v.created_at, v.content,
+              (select a.name from drafts dr left join agents a on a.id = dr.agent_id
+                where v.author_kind = 'agent' and v.note = 'Approved: ' || dr.title and dr.status in ('approved','published')
+                order by dr.reviewed_at desc nulls last limit 1) as agent
+         from memory_doc_versions v join memory_docs d on d.id = v.doc_id where d.key = $1 order by v.version desc limit 50`,
       [key],
     );
     return r.rows;
   });
+  // Names live outside the tenant schema; read only members of this workspace.
+  const ids = [...new Set(rows.flatMap((r) => (r.author_id ? [r.author_id] : [])))];
+  const names = new Map<string, string>();
+  if (ids.length) {
+    const u = await sys<{ id: string; name: string; email: string }>(
+      `select u.id, u.name, u.email from users u join memberships m on m.user_id = u.id and m.tenant_id = $1 where u.id = any($2::uuid[])`,
+      [ctx.tenantId, ids],
+    );
+    for (const x of u.rows) names.set(x.id, (x.name.trim().split(/\s+/)[0] || x.email.split("@")[0]) ?? "");
+  }
+  return rows.map(({ author_id, ...r }) => ({ ...r, person: author_id ? (names.get(author_id) ?? null) : null }));
 }
 
 /** Insert or update a memory doc and record a version. Runs inside an existing tenant tx. */

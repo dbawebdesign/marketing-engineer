@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { L } from "./nav";
 import { Markdown } from "./markdown";
+import { DraftMetaRow } from "./draft-meta";
 import { Dot, buttonClass, cx, timeAgo } from "./ui";
 
 const LINES = 12;
@@ -29,6 +30,8 @@ export function DraftPreview({
   href,
   more = 0,
   label = "Waiting for your review",
+  meta,
+  quiet = false,
 }: {
   title: string;
   body: string;
@@ -37,6 +40,10 @@ export function DraftPreview({
   /** Other pending drafts of the same kind. */
   more?: number;
   label?: string;
+  /** Quiet facts about the draft, one row under the title. */
+  meta?: { label: string; value: string }[];
+  /** The page already says it's waiting: no status line, only an optional label. */
+  quiet?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -47,6 +54,9 @@ export function DraftPreview({
   return (
     <section className="mb-4 overflow-hidden rounded-2xl bg-surface ring-1 ring-line" aria-labelledby={`${id}-t`}>
       <div className="px-6 pt-5 sm:px-8 sm:pt-6">
+        {quiet ? (
+          label !== "Waiting for your review" ? <p className="text-[13px] text-ink-3">{label}</p> : null
+        ) : (
         <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-ink-3">
           <Dot tone="warn" />
           <span className="font-medium text-warn">{label}</span>
@@ -59,9 +69,11 @@ export function DraftPreview({
             </>
           ) : null}
         </p>
-        <h3 id={`${id}-t`} className="mt-2 text-[17px] font-semibold tracking-[-0.01em] text-ink text-pretty">
+        )}
+        <h3 id={`${id}-t`} className={cx("text-[17px] font-semibold tracking-[-0.01em] text-ink text-pretty", (!quiet || label !== "Waiting for your review") && "mt-2")}>
           {title}
         </h3>
+        <DraftMetaRow meta={meta} className="mt-1" />
       </div>
       <div
         id={`${id}-b`}

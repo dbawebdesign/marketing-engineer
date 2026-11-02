@@ -7,6 +7,7 @@ import { DAY_NAMES, fmtTime, parseCron, toCron, type SimpleSchedule } from "@/li
 import { AutoTextarea } from "./auto-textarea";
 import { Button, Input, Label, cx, timeAgo } from "./ui";
 import { toast } from "./toast";
+import { L } from "./nav";
 
 type Spec = { mission: string; filters: string[]; output: string; goodLooksLike: string[]; approval: string; metric: string; lookbackDays: number; schedule: string; dataSources: string[]; writesTo: string };
 
@@ -110,10 +111,13 @@ export function AgentEditor({
   agent,
   models,
   canManage,
+  aiEnabled,
 }: {
   agent: { id: string; name: string; enabled: boolean; schedule_cron: string | null; model: string; timezone: string; spec: Spec };
   models: { id: string; tier: "deep" | "fast" }[];
   canManage: boolean;
+  /** Without Claude connected every run uses the offline engine, so the model choice does nothing yet. */
+  aiEnabled: boolean;
 }) {
   const initial = useMemo(
     () => ({
@@ -223,12 +227,32 @@ export function AgentEditor({
         </div>
         <div className={field}>
           <Label>Model</Label>
-          <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Model">
-            {models.map((m) => (
-              <button key={m.id} type="button" role="radio" aria-checked={s.model === m.id} title={m.id} onClick={() => set("model", m.id)} className={chip(s.model === m.id)}>
-                {MODEL_LABEL[m.tier]}
-              </button>
-            ))}
+          <div>
+            <div className={cx("flex flex-wrap gap-1.5", !aiEnabled && "opacity-50")} role="radiogroup" aria-label="Model" aria-disabled={!aiEnabled || undefined} aria-describedby={aiEnabled ? undefined : "model-offline"}>
+              {models.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={s.model === m.id}
+                  title={aiEnabled ? m.id : undefined}
+                  disabled={!aiEnabled}
+                  onClick={() => set("model", m.id)}
+                  className={cx(chip(s.model === m.id), !aiEnabled && "cursor-not-allowed")}
+                >
+                  {MODEL_LABEL[m.tier]}
+                </button>
+              ))}
+            </div>
+            {!aiEnabled ? (
+              <p id="model-offline" className="mt-2 text-[13px] text-ink-3">
+                Runs on the offline engine until Claude is connected in{" "}
+                <L href="/settings" className="text-ink-2 underline underline-offset-2 hover:text-ink">
+                  Settings
+                </L>
+                .
+              </p>
+            ) : null}
           </div>
         </div>
         <div className={field}>

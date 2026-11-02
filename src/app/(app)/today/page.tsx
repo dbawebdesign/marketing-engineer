@@ -11,6 +11,8 @@ import { L } from "@/components/nav";
 import { slugForSystem } from "@/lib/systems";
 import { Badge, Dot, Empty, buttonClass, cx, plural, timeAgo } from "@/components/ui";
 import { RunButton } from "@/components/run-button";
+import { AgentStatusText, agentStatus } from "@/components/agent-status";
+import { can } from "@/lib/rbac";
 import { DemoButton } from "@/components/demo-button";
 import { LiveRefresh } from "@/components/live-refresh";
 
@@ -60,6 +62,7 @@ export default async function TodayPage() {
   const activeFor = (id?: string) => state.active.find((r) => r.agent_id === id)?.id ?? null;
   const working = new Set(state.active.map((r) => r.agent_id));
   const firstRun = !state.finishedRun;
+  const canRun = can(ctx.role, "agents:run");
   const showNext = state.finishedRun && state.approvedMemo && state.contentDrafts === 0 && (content || outbound);
 
   return (
@@ -222,15 +225,21 @@ export default async function TodayPage() {
               <section>
                 <Heading>Agents</Heading>
                 <ul className="-mx-2 space-y-0.5">
-                  {agents.map((a) => (
-                    <li key={a.id}>
-                      <L href={`/s/${slugForSystem(a.system)}`} className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 transition-colors hover:bg-subtle">
-                        <Dot tone={!a.enabled ? "neutral" : a.last_run?.status === "failed" ? "danger" : "accent"} pulse={working.has(a.id)} />
-                        <span className="flex-1 truncate text-sm">{a.name}</span>
-                        <span className="text-xs text-ink-3 tnum">{working.has(a.id) ? "working" : a.next_run_at && a.enabled ? timeAgo(a.next_run_at) : "manual"}</span>
-                      </L>
-                    </li>
-                  ))}
+                  {agents.map((a) => {
+                    const st = agentStatus(working.has(a.id) ? { ...a, last_run: { status: "running", created_at: new Date().toISOString() } } : a);
+                    return (
+                      <li key={a.id} className="flex items-center gap-2 rounded-lg transition-colors hover:bg-subtle">
+                        <L href={`/s/${slugForSystem(a.system)}`} className="min-w-0 flex-1 px-2 py-1.5">
+                          <span className="block truncate text-sm">{a.name}</span>
+                          <span className="flex min-w-0 items-center gap-1 text-xs">
+                            <AgentStatusText status={st} />
+                            {st.next && st.kind !== "never" ? <span className="truncate text-ink-3">· {st.next}</span> : null}
+                          </span>
+                        </L>
+                        {st.kind === "never" && canRun ? <RunButton agentId={a.id} label="Run" size="sm" variant="ghost" className="mr-1 shrink-0" /> : null}
+                      </li>
+                    );
+                  })}
                 </ul>
               </section>
               <section>

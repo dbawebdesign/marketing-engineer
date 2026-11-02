@@ -7,6 +7,7 @@ import { Markdown } from "@/components/markdown";
 import { DocEditor } from "@/components/doc-editor";
 import { ChipScroller } from "@/components/chip-scroller";
 import { cx, timeAgo } from "@/components/ui";
+import { creditFor } from "@/lib/doc-credit";
 
 export const metadata = { title: "Memory" };
 
@@ -14,7 +15,7 @@ export const metadata = { title: "Memory" };
 const FOLDER: Record<string, string> = { "Content engine": "Founder content", "Outbound engine": "Outbound signals" };
 const AGENT_WRITTEN = new Set(["customer-truth/what-the-market-is-telling-us", "cockpit/weekly-brief"]);
 
-export default async function MemoryPage({ searchParams }: { searchParams: Promise<{ doc?: string }> }) {
+export default async function MemoryPage({ searchParams }: { searchParams: Promise<{ doc?: string; edit?: string }> }) {
   const ctx = await requireCtx();
   const sp = await searchParams;
   const docs = await listDocs(ctx);
@@ -89,11 +90,11 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
           </div>
         </nav>
         <div className="min-w-0">
-          <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
-            <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
-            {hasContent ? <span className="text-[13px] text-ink-3">v{doc!.version} · updated {timeAgo(doc!.updated_at)}</span> : null}
-          </div>
           <DocEditor
+            key={`${current}:${sp.edit === "1" ? "edit" : "view"}`}
+            title={title}
+            meta={hasContent ? `v${doc!.version} · ${creditFor(history[0]) ? `${creditFor(history[0])} · ` : ""}${timeAgo(doc!.updated_at)}` : null}
+            startEditing={sp.edit === "1"}
             docKey={current}
             content={doc?.content ?? ""}
             version={doc?.version ?? 0}
@@ -110,9 +111,11 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
                 {history.slice(0, 12).map((h) => (
                   <li key={h.version} className="flex gap-3 text-ink-2">
                     <span className="w-8 shrink-0 text-ink-3 tnum">v{h.version}</span>
-                    <span className="min-w-0 flex-1 truncate">{h.note ?? (h.author_kind === "agent" ? "Agent update" : "Edited")}</span>
+                    <span className="min-w-0 flex-1 truncate">
+                      {h.author_kind === "agent" && h.note?.startsWith("Approved: ") ? h.note.slice(10) : h.author_kind === "system" ? (h.note === "Sample data" ? "Sample content" : "Created") : (h.note ?? "Edited")}
+                    </span>
                     <span className="shrink-0 text-[13px] text-ink-3">
-                      {h.author_kind === "agent" ? "Agent" : h.author_kind === "user" ? "Team" : "System"} · {timeAgo(h.created_at)}
+                      {creditFor(h)} · {timeAgo(h.created_at)}
                     </span>
                   </li>
                 ))}

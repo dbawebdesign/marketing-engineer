@@ -1,31 +1,26 @@
 import { SlidersHorizontal } from "lucide-react";
 import type { Agent } from "@/server/services/agents";
-import { agentState, scheduleLabel } from "@/lib/schedule";
 import { L } from "./nav";
 import { AgentRun } from "./run-button";
-import { Dot, buttonClass, cx, timeAgo } from "./ui";
+import { AgentStatusText, agentStatus } from "./agent-status";
+import { buttonClass, cx } from "./ui";
 
-/** One quiet line about the agent behind a system: state, schedule, last run. */
+/** One quiet line about the agent behind a system: name, what actually happened last, what's scheduled. */
 export function AgentMeta({ agent, className }: { agent: Agent; className?: string }) {
-  const st = agentState(agent);
-  const last = agent.last_run;
+  const st = agentStatus(agent);
   return (
     <p className={cx("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-ink-3", className)}>
-      <span className="flex items-center gap-2" title={st.label}>
-        <Dot tone={st.tone} pulse={st.pulse} />
-        <span className="sr-only">{st.label}:</span>
-        <L href={`/agents/${agent.id}`} className="font-medium text-ink-2 hover:text-ink">
-          {agent.name}
-        </L>
-      </span>
-      <span>
-        <span aria-hidden>· </span>
-        {scheduleLabel(agent)}
-      </span>
-      <span className={last?.status === "failed" ? "text-warn" : undefined}>
-        <span aria-hidden className="text-ink-3">· </span>
-        {st.pulse ? "Running now" : last ? `Last run ${timeAgo(last.created_at)}${last.status === "failed" ? ", failed" : ""}` : "Never run"}
-      </span>
+      <L href={`/agents/${agent.id}`} className="font-medium text-ink-2 hover:text-ink">
+        {agent.name}
+      </L>
+      <span aria-hidden>·</span>
+      <AgentStatusText status={st} />
+      {st.next ? (
+        <span>
+          <span aria-hidden>· </span>
+          {st.next}
+        </span>
+      ) : null}
       {agent.readiness && !agent.readiness.ready ? (
         <span>
           <span aria-hidden>· </span>

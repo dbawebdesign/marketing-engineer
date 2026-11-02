@@ -3,7 +3,7 @@ import { requireCtx } from "@/server/web/session";
 import { getAgent } from "@/server/services/agents";
 import { GROWTH_OS } from "@/server/services/memory";
 import { SYSTEM_META } from "@/server/agents/types";
-import { MODELS } from "@/lib/ai/provider";
+import { MODELS, aiEnabled } from "@/lib/ai/provider";
 import { isUuid } from "@/lib/db";
 import { can } from "@/lib/rbac";
 import { slugForSystem } from "@/lib/systems";
@@ -18,9 +18,9 @@ export const metadata = { title: "Agent" };
 /** Memory doc keys in a spec read as their titles. */
 const prettyDocs = (s: string) => GROWTH_OS.reduce((t, g) => t.replaceAll(g.key, `“${g.title}”`), s);
 
-const RUN: Record<string, { tone: "neutral" | "accent" | "warn"; label: string }> = {
-  succeeded: { tone: "accent", label: "Succeeded" },
-  failed: { tone: "warn", label: "Failed" },
+const RUN: Record<string, { tone: "neutral" | "accent" | "danger"; label: string }> = {
+  succeeded: { tone: "neutral", label: "Succeeded" },
+  failed: { tone: "danger", label: "Failed" },
   running: { tone: "accent", label: "Running" },
   queued: { tone: "neutral", label: "Queued" },
 };
@@ -52,6 +52,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
           <AgentEditor
             agent={{ ...agent, spec: { ...agent.spec, writesTo: prettyDocs(agent.spec.writesTo) } }}
             canManage={can(ctx.role, "agents:manage")}
+            aiEnabled={aiEnabled()}
             models={[
               { id: MODELS.deep, tier: "deep" },
               { id: MODELS.fast, tier: "fast" },
@@ -79,11 +80,12 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
                       </span>
                       <span className="text-ink">{timeAgo(r.created_at)}</span>
                       <span className="text-ink-3">· {r.trigger === "schedule" ? "Scheduled" : r.trigger === "manual" ? "Manual" : r.trigger === "api" ? "Via API" : r.trigger}</span>
+                      {r.status === "succeeded" ? <span className="text-ink-3">· {r.drafts ? plural(r.drafts, "draft") : "no drafts"}</span> : null}
                       {tier || Number(r.cost_usd) > 0 ? (
                         <span className="ml-auto text-[13px] text-ink-3 tnum">{[tier, Number(r.cost_usd) > 0 ? `$${Number(r.cost_usd).toFixed(3)}` : null].filter(Boolean).join(" · ")}</span>
                       ) : null}
                     </div>
-                    {r.error ? <p className="mt-1 pl-3.5 text-[13px] text-warn">{r.error}</p> : null}
+                    {r.error ? <p className="mt-1 pl-3.5 text-[13px] text-danger">{r.error}</p> : null}
                     {stats.nothing && r.summary ? <p className="mt-0.5 pl-3.5 text-[13px] text-ink-3">{r.summary}</p> : null}
                     {stats.dropped_claims ? <p className="mt-0.5 pl-3.5 text-[13px] text-ink-3">{plural(stats.dropped_claims, "unsupported claim")} dropped</p> : null}
                   </li>

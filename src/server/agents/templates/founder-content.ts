@@ -4,7 +4,10 @@ import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
 import { clip, sentences, tokens, topPhrases } from "../text";
-import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf } from "./guardrails";
+import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf, words } from "./guardrails";
+import { draftTitle, fromSignals, meta, shippable } from "../format";
+
+const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 const READS = ["customer-truth/what-the-market-is-telling-us", "content/founder-voice", "content/winning-hooks", "outbound/approved-angles", "outbound/banned-language"];
 
@@ -15,8 +18,9 @@ const Schema = z.object({
     .array(
       z.object({
         platform: z.enum(["linkedin", "x"]),
+        title: z.string().describe("A 2-6 word working title naming the idea, not the hook, e.g. 'The $48k quote nobody sent'. Not shown to readers."),
         hook: z.string().describe("The first line. Earns the second line. No question-bait, no emoji."),
-        body: z.string().describe("The full post text after the hook, ready to paste. LinkedIn: 60-180 words, short paragraphs. X: the whole post including the hook under 280 characters."),
+        body: z.string().describe("The full post text after the hook, ready to paste, and nothing else: no labels, notes, hashtags or '---'. LinkedIn: 60-180 words, short paragraphs. X: the whole post including the hook under 280 characters."),
         insight: z.string().describe("The customer pain or insight this post came from, in one sentence."),
         angle: z.string().describe("The angle in a few words, e.g. 'lost replacement revenue'."),
         evidence: z.array(Ev).describe("The signals this post is built on. At least one."),
@@ -80,6 +84,7 @@ function offline(rc: RunContext): Out {
       const text = `${calls.length} sales calls last week. ${openers.length} brought up ${pretty(loud.phrase)}. ${closers.length} of the ${won.length} that bought ended up talking about ${pretty(wonP.phrase)} instead.\n\nLead with what closes, not with what's loudest on the first call.`;
       posts.push({
         platform: "x",
+        title: `What closes vs. what's loudest`,
         hook: `What buyers open with is not what they buy.`,
         body: text,
         insight: `Buyers raise ${pretty(loud.phrase)} first, but the deals that close are decided on ${pretty(wonP.phrase)}.`,
@@ -103,6 +108,7 @@ function offline(rc: RunContext): Out {
     const vl = voiceLine(rc, money.s.content);
     posts.push({
       platform: "linkedin",
+      title: followUp ? `The ${amount} quote nobody sent` : `The ${amount} nobody reported`,
       hook: followUp ? `${amount}. That's what one quote nobody sent cost a contractor last quarter.` : `${amount}, gone, and it never showed up on a report.`,
       body: [
         `${retell(money.q, money.s)}`,
@@ -130,6 +136,7 @@ function offline(rc: RunContext): Out {
     const t = techsOf(own.s);
     posts.push({
       platform: "x",
+      title: "The leak buyers can't count",
       hook: `"${said.charAt(0).toUpperCase()}${said.slice(1).replace(/\.$/, "")}."`,
       body: `${t ? `A ${t}-tech shop` : "A contractor"} wrote that on a demo request this week.\n\nYou can't fix a leak you can't count. Count it first.`,
       insight: `Buyers already suspect the leak; what they lack is a number.`,
@@ -150,6 +157,7 @@ function offline(rc: RunContext): Out {
     const aboutMoney = /revenue|money|upside/i.test(churn.content);
     posts.push({
       platform: "linkedin",
+      title: "What a churned customer taught us",
       hook: `We lost a customer this month. The exit call told us exactly why.`,
       body: [
         retell(bare(why), churn),
@@ -185,6 +193,7 @@ function offline(rc: RunContext): Out {
       const where = /reddit/i.test(`${question.s.title} ${question.s.url ?? ""}`) ? "Someone on r/HVAC asked" : "A contractor asked online";
       posts.push({
         platform: "linkedin",
+        title: "How good shops track replacement quotes",
         hook: `${where}: "${question.q}"`,
         body: [
           `Here's what we hear from the shops that do it well. Their words, lightly trimmed:`,
@@ -216,12 +225,17 @@ function offline(rc: RunContext): Out {
   return {
     posts: posts.slice(0, 5),
     asset_ideas,
-    notes: `Offline engine: ${posts.length} posts built from ${sigs.length} signals using fixed post shapes (contrast, field number, buyer's words, churn lesson, public question). Connect a Claude API key for posts written in the founder's voice from scratch.`,
+    notes: `${posts.length} posts from ${sigs.length} signals (contrast, field number, buyer's words, churn lesson, public question).`,
   };
 }
 
+/** The post exactly as it ships: hook, then body, nothing else. */
 function postText(p: Post) {
-  return p.platform === "x" ? `${p.hook}\n\n${p.body}` : `${p.hook}\n\n${p.body}`;
+  const hook = shippable(p.hook);
+  const body = shippable(p.body);
+  // Some writers repeat the hook at the top of the body.
+  const rest = body.toLowerCase().startsWith(hook.toLowerCase()) ? body.slice(hook.length).trim() : body;
+  return rest ? `${hook}\n\n${rest}` : hook;
 }
 
 export const founderContent: AgentTemplate<typeof Schema> = {
@@ -293,16 +307,25 @@ Write this week's posts for ${rc.tenantName}.`,
       }
       const over = p.platform === "x" && text.length > 280;
       if (over) xOver++;
+      const platform = p.platform === "x" ? "X" : "LinkedIn";
       drafts.push({
         type: "post",
-        title: clip(`${p.platform === "x" ? "X" : "LinkedIn"}: ${p.hook}`, 90),
-        body: `${text}
-
----
-**Platform:** ${p.platform === "x" ? `X (${text.length} characters${over ? ", over 280: trim before posting" : ""})` : `LinkedIn (${text.split(/\s+/).length} words)`}
-**Came from:** ${p.insight}
-**Angle:** ${p.angle}`,
-        payload: { platform: p.platform, hook: p.hook, text, insight: p.insight, angle: p.angle },
+        title: draftTitle(text, p.title, p.angle, p.insight),
+        body: text,
+        payload: {
+          platform: p.platform,
+          hook: p.hook,
+          text,
+          insight: p.insight,
+          angle: p.angle,
+          meta: meta(
+            ["Platform", platform],
+            ["Length", p.platform === "x" ? `${text.length}/280 characters${over ? ": trim before posting" : ""}` : `${words(text)} words`],
+            ["Angle", cap(p.angle)],
+            ["From", fromSignals(p.evidence, rc.signalMap)],
+            ["Insight", p.insight],
+          ),
+        },
         evidence: p.evidence,
       });
     }
@@ -312,14 +335,18 @@ Write this week's posts for ${rc.tenantName}.`,
         blocked.push(`"${a.name}" (${hits.join(", ")})`);
         continue;
       }
+      const pitch = shippable(a.pitch);
       drafts.push({
         type: "asset_idea",
-        title: `Asset idea: ${a.name}`,
-        body: `**${a.pitch}**
-
-- Kind: ${a.kind.replace("_", " ")}
-- Why: ${a.why}`,
-        payload: { kind: a.kind, name: a.name, pitch: a.pitch, why: a.why },
+        title: draftTitle(pitch, a.name),
+        body: pitch,
+        payload: {
+          kind: a.kind,
+          name: a.name,
+          pitch,
+          why: a.why,
+          meta: meta(["Kind", cap(a.kind.replace("_", " "))], ["Why", a.why], ["From", fromSignals(a.evidence, rc.signalMap)]),
+        },
         evidence: a.evidence,
       });
     }

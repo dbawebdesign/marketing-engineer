@@ -2,14 +2,15 @@ import { notFound } from "next/navigation";
 import { requireCtx } from "@/server/web/session";
 import { listAgents } from "@/server/services/agents";
 import { listDrafts } from "@/server/services/drafts";
-import { getDoc } from "@/server/services/memory";
+import { docHistory, getDoc } from "@/server/services/memory";
 import { listExperiments, angleMetrics } from "@/server/services/experiments";
 import { signalStats } from "@/server/services/signals";
 import { SYSTEM_META } from "@/server/agents/types";
 import { SYSTEM_SLUGS, type SystemSlug } from "@/lib/systems";
+import { creditFor } from "@/lib/doc-credit";
 import { can } from "@/lib/rbac";
 import { AgentActions, AgentMeta } from "@/components/agent-card";
-import { AngleChart, Coverage, CreativeBatch, DocView, DraftsList, ExperimentBoard, FirstRun, OutboundQueue, PostsLibrary } from "@/components/system-views";
+import { AngleChart, Coverage, CreativeBatch, DocView, DraftsList, ExperimentBoard, FirstRun, OutboundQueue, PendingBlock, PostsLibrary } from "@/components/system-views";
 import type { System } from "@/server/agents/types";
 
 /** What each system's agent makes, for its first-run panel. */
@@ -51,11 +52,12 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
   if (!system) notFound();
   const ctx = await requireCtx();
   const meta = SYSTEM_META[system];
-  const [agents, drafts, truth, brief, experiments, stats] = await Promise.all([
+  const docKey = system === "customer_truth" ? "customer-truth/what-the-market-is-telling-us" : system === "growth_cockpit" ? "cockpit/weekly-brief" : null;
+  const [agents, drafts, doc, history, experiments, stats] = await Promise.all([
     listAgents(ctx, { readiness: true }),
     listDrafts(ctx, { system, limit: system === "outbound_signal" ? 100 : 60 }),
-    system === "customer_truth" ? getDoc(ctx, "customer-truth/what-the-market-is-telling-us") : null,
-    system === "growth_cockpit" ? getDoc(ctx, "cockpit/weekly-brief") : null,
+    docKey ? getDoc(ctx, docKey) : null,
+    docKey ? docHistory(ctx, docKey).catch(() => []) : [],
     system === "creative_testing" ? listExperiments(ctx, 30) : [],
     signalStats(ctx),
   ]);
@@ -64,21 +66,35 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
   const days = mine[0]?.spec.lookbackDays || 7;
   const angles = system === "growth_cockpit" ? await angleMetrics(ctx, days) : [];
   const canRun = can(ctx.role, "agents:run");
-  const pendingOf = (type: string) => drafts.filter((d) => d.type === type && d.status === "pending");
+  const pending = drafts.filter((d) => d.status === "pending");
+  const pendingOf = (type: string) => pending.filter((d) => d.type === type);
   const totalSignals = stats.reduce((a, b) => a + b.total, 0);
   const lead = mine[0];
   const running = lead?.last_run && (lead.last_run.status === "queued" || lead.last_run.status === "running") ? lead.last_run.id : null;
-  const hasOutput = drafts.length > 0 || !!truth?.content.trim() || !!brief?.content.trim() || experiments.length > 0;
+  const hasOutput = drafts.length > 0 || !!doc?.content.trim() || experiments.length > 0;
   // Nothing made yet: one panel with the next step replaces the empty artifact views.
   const firstRun = !!lead && mine.length === 1 && !hasOutput;
+  // Something waits for review: that's the primary action on the page, so Run steps back.
+  const quiet = pending.length > 0;
   // Drafts the page already shows in full stay out of "Recent drafts".
   const shown = [
-    pendingOf("market_memo")[0],
-    pendingOf("cockpit_memo")[0],
-    ...pendingOf("post"),
+    ...drafts.filter((d) => d.type === "post" && (d.status === "approved" || d.status === "published")),
+    // The latest approved memo or brief *is* the document shown above.
+    drafts.find((d) => (d.type === "market_memo" || d.type === "cockpit_memo") && (d.status === "approved" || d.status === "published")),
     drafts.find((d) => d.type === "creative_batch"),
     drafts.find((d) => d.type === "ai_answer_pack"),
   ].flatMap((d) => (d ? [d.id] : []));
+  const docView = (title: string, noun: string, idle: { title: string; body: string }) => (
+    <DocView
+      doc={doc}
+      title={title}
+      pending={pendingOf(noun)}
+      slug={slug}
+      idle={idle}
+      credit={creditFor(history[0])}
+      editHref={docKey && can(ctx.role, "memory:write") ? `/memory?doc=${encodeURIComponent(docKey)}&edit=1` : null}
+    />
+  );
 
   return (
     <div className="animate-in">
@@ -88,13 +104,13 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
             <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-ink">{meta.label}</h1>
             <p className="mt-1 max-w-2xl text-[15px] text-ink-2">{meta.blurb}</p>
           </div>
-          {mine.length === 1 ? <AgentActions agent={mine[0]!} canRun={canRun} run={!firstRun} quiet={drafts.some((d) => d.status === "pending")} /> : null}
+          {mine.length === 1 ? <AgentActions agent={mine[0]!} canRun={canRun} run={!firstRun} quiet={quiet} /> : null}
         </div>
         <div className="mt-4 space-y-2">
           {mine.map((a) => (
             <div key={a.id} className="flex flex-wrap items-center justify-between gap-2">
               <AgentMeta agent={a} />
-              {mine.length > 1 ? <AgentActions agent={a} canRun={canRun} /> : null}
+              {mine.length > 1 ? <AgentActions agent={a} canRun={canRun} quiet={quiet} /> : null}
             </div>
           ))}
           {!mine.length ? <p className="text-[13px] text-ink-3">No agent runs this system yet. An admin can add one from Agents.</p> : null}
@@ -117,18 +133,26 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
         </>
       ) : (
         <>
-          {system === "customer_truth" ? (
-            <DocView
-              doc={truth}
-              title="Current truth file"
-              pending={pendingOf("market_memo")}
-              noun="memo"
-              idle={{
+          {system === "customer_truth"
+            ? docView("Current truth file", "market_memo", {
                 title: "No truth file yet",
-                body: "Run the agent, then approve its memo. The approved memo becomes the source of truth every other agent reads.",
-              }}
-            />
+                body: "Run the agent, then approve its memo. It becomes the source of truth every other agent reads.",
+              })
+            : null}
+
+          {system === "growth_cockpit" ? (
+            <>
+              {docView("This week's brief", "cockpit_memo", {
+                title: "No brief yet",
+                body: "Run the agent, then approve its brief. It becomes the weekly read every other agent starts from.",
+              })}
+              <AngleChart angles={angles} days={days} />
+            </>
           ) : null}
+
+          {/* Everything else: one line to the filtered inbox, at most one preview. */}
+          {system === "founder_content" ? <PendingBlock drafts={pending} slug={slug} preview /> : null}
+          {system === "outbound_signal" || system === "creative_testing" || system === "ai_search" ? <PendingBlock drafts={pending} slug={slug} /> : null}
 
           {system === "founder_content" ? <PostsLibrary drafts={drafts} /> : null}
 
@@ -136,30 +160,14 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
 
           {system === "creative_testing" ? (
             <>
-              <ExperimentBoard experiments={experiments} />
+              <ExperimentBoard experiments={experiments} hookLab={lead ? { id: lead.id, name: lead.name } : null} canWrite={can(ctx.role, "experiments:write")} canRun={canRun} />
               <CreativeBatch draft={drafts.find((d) => d.type === "creative_batch")} />
             </>
           ) : null}
 
           {system === "ai_search" ? <Coverage draft={drafts.find((d) => d.type === "ai_answer_pack")} /> : null}
 
-          {system === "growth_cockpit" ? (
-            <>
-              <AngleChart angles={angles} days={days} />
-              <DocView
-                doc={brief}
-                title="This week's brief"
-                pending={pendingOf("cockpit_memo")}
-                noun="brief"
-                idle={{
-                  title: "No brief yet",
-                  body: "Run the agent, then approve its brief. It becomes the weekly read every other agent starts from.",
-                }}
-              />
-            </>
-          ) : null}
-
-          {system !== "outbound_signal" ? <DraftsList drafts={drafts} hide={shown} /> : null}
+          {system !== "outbound_signal" ? <DraftsList drafts={drafts} hide={shown} slug={slug} /> : null}
         </>
       )}
     </div>

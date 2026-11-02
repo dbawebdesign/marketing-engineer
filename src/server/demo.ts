@@ -64,7 +64,7 @@ export const DEMO_SIGNALS: SignalInputT[] = [
     content: "The quote is the handoff that breaks. The tech knows the unit is dying, the customer trusts the tech, and then it goes into a black hole at the office. If the tech could hit one button and the customer got a quote with photos that afternoon, we'd close most of them." },
 ];
 
-const DEMO_DOCS: Record<string, string> = {
+export const DEMO_DOCS: Record<string, string> = {
   "content/founder-voice": `# Founder voice: Maya Chen, CEO of Dispatchly
 
 Maya ran dispatch at her family's commercial HVAC company for nine years before starting Dispatchly.

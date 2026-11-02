@@ -29,7 +29,7 @@ const SOURCE: Record<string, string> = {
   other: "Other",
 };
 
-/** A signal's display title, and a phrase from it that /signals?q= will find again. */
+/** A signal's display title: its own, or its first line. */
 function signalLabel(s: { title: string; content: string }) {
   if (s.title?.trim()) return s.title.trim();
   const line = s.content.split("\n").find((l) => l.trim())?.trim() ?? "";
@@ -170,7 +170,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
             label,
             hint: [SOURCE[s.source] ?? s.source, s.account].filter(Boolean).join(" · "),
             icon: MessageSquareQuote,
-            run: () => go(`/signals?q=${encodeURIComponent(label)}`),
+            run: () => go(`/signals?id=${s.id}`),
           };
         }),
       });

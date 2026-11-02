@@ -1,17 +1,21 @@
 "use client";
 import { useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Check, Copy, Info, Pencil, X } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Copy, Info, Pencil, X } from "lucide-react";
 import { reviewAction } from "@/app/(app)/actions";
 import { undoReviewAction } from "@/app/(app)/actions-extra";
 import { Badge, Button, Kbd, Textarea, cx, plural, timeAgo } from "./ui";
 import { AutoTextarea } from "./auto-textarea";
 import { Markdown } from "./markdown";
+import { DraftMetaRow } from "./draft-meta";
 import { draftCommands } from "./shortcuts";
 import { L } from "./nav";
 import { toast } from "./toast";
 import { useBase } from "./nav";
 import { emitEmbed } from "./embed-bridge";
+import { SignalSheet } from "./signal-sheet";
+import { sourceLabel } from "@/lib/signal-sources";
+import { dedupeReceipts } from "@/lib/receipts";
 
 export type ReviewDraft = {
   id: string;
@@ -28,9 +32,54 @@ export type ReviewDraft = {
   effect_href: string;
   /** Set when this downstream draft was written while a market memo still waits for review. */
   pending_memo_id?: string | null;
-  evidence: { signal_id: string; quote: string; source?: string; url?: string | null; account?: string | null; occurred_at?: string }[];
+  evidence: Receipt[];
+  /** Quiet facts about the draft (platform, account, fit…), shown as one row under the title. */
+  meta?: { label: string; value: string }[];
   html: React.ReactNode;
 };
+
+type Receipt = { signal_id: string; quote: string; source?: string; url?: string | null; account?: string | null; occurred_at?: string };
+
+/* ------------------------------------------------------------------ undo */
+
+/**
+ * The last undoable decision made on this page, kept for the life of the tab so ⌘Z
+ * still works after its toast is gone. The server enforces the real window.
+ */
+const UNDO_WINDOW_MS = 115_000;
+let lastDecision: { id: string; at: number; scope: string } | null = null;
+
+async function undoDecision(router: ReturnType<typeof useRouter>, base: string) {
+  const d = lastDecision;
+  if (!d) return;
+  lastDecision = null;
+  const u = await undoReviewAction(d.id);
+  if (!u.ok) return void toast.error(u.error, { key: "review" });
+  toast.ok("Back in your queue", { key: "review" });
+  router.push(`${base}/inbox?${d.scope}d=${d.id}`, { scroll: false });
+  router.refresh();
+}
+
+/** ⌘Z / Ctrl+Z takes back the last approve or reject, while the server still allows it. */
+export function UndoShortcut() {
+  const router = useRouter();
+  const base = useBase();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "z" || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+      if (e.defaultPrevented || isTypingTarget(e.target) || overlayOpen() || !lastDecision) return;
+      e.preventDefault();
+      if (Date.now() - lastDecision.at > UNDO_WINDOW_MS) {
+        lastDecision = null;
+        return void toast.error("Too late to undo. Reviews can be undone for two minutes.", { key: "review" });
+      }
+      void undoDecision(router, base);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [router, base]);
+  return null;
+}
 
 export type RecentReason = { text: string; isRule: boolean };
 
@@ -62,7 +111,21 @@ function useModKey() {
   return mod;
 }
 
-export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft; nextId: string | null; reasons?: RecentReason[] }) {
+export function ReviewPane({
+  draft,
+  nextId,
+  reasons = [],
+  listQuery = "",
+  scopeQuery = "",
+}: {
+  draft: ReviewDraft;
+  nextId: string | null;
+  reasons?: RecentReason[];
+  /** The list's query (tab, filter) with a trailing "&", kept when moving on. */
+  listQuery?: string;
+  /** Just the filter part, for coming back to the pending queue. */
+  scopeQuery?: string;
+}) {
   const router = useRouter();
   const base = useBase();
   const mod = useModKey();
@@ -107,25 +170,17 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
             : "Rejected";
       const id = draft.id;
       const href = draft.effect_href;
+      lastDecision = draft.undoable ? { id, at: Date.now(), scope: scopeQuery } : null;
       // Undo when the review can be taken back; otherwise a way to see where the approval went.
       toast.ok(text, {
         key: "review",
         action: draft.undoable
-          ? {
-              label: "Undo",
-              run: async () => {
-                const u = await undoReviewAction(id);
-                if (!u.ok) return void toast.error(u.error, { key: "review" });
-                toast.ok("Back in your queue", { key: "review" });
-                router.push(`${base}/inbox?d=${id}`, { scroll: false });
-                router.refresh();
-              },
-            }
+          ? { label: "Undo", run: () => undoDecision(router, base) }
           : decision === "approve"
             ? { label: "View", run: () => router.push(base + href) }
             : undefined,
       });
-      router.push(nextId ? `${base}/inbox?d=${nextId}` : `${base}/inbox?done=${id}`, { scroll: false });
+      router.push(nextId ? `${base}/inbox?${listQuery}d=${nextId}` : `${base}/inbox?${scopeQuery}done=${id}`, { scroll: false });
       router.refresh();
     });
   };
@@ -191,13 +246,16 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
           {draft.system_label} · {draft.agent_name ?? "Agent"} · {timeAgo(draft.created_at)}
         </p>
         <h2 className="mt-1 text-xl font-semibold tracking-tight text-pretty">{draft.title}</h2>
+        <DraftMetaRow meta={draft.meta} className="mt-1.5" />
         {draft.pending_memo_id && editable ? (
-          <p className="mt-2 flex items-center gap-1.5 text-[13px] text-ink-3">
-            <Info size={13} className="shrink-0" />
-            <span className="min-w-0 truncate">Built before this week&rsquo;s market memo was approved.</span>
-            <L href={`/inbox?d=${draft.pending_memo_id}`} scroll={false} className="shrink-0 text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink">
-              Review memo
-            </L>
+          <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3">
+            <Info size={13} className="mt-[3px] shrink-0" />
+            <span className="min-w-0">
+              Built before this week&rsquo;s market memo was approved.{" "}
+              <L href={`/inbox?d=${draft.pending_memo_id}`} scroll={false} className="whitespace-nowrap text-ink-2 underline decoration-line-strong underline-offset-2 hover:text-ink">
+                Review memo
+              </L>
+            </span>
           </p>
         ) : null}
         {draft.status !== "pending" ? (
@@ -348,37 +406,69 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
         </div>
       ) : null}
 
-      {draft.evidence.length ? (
-        <section className="mt-8">
-          <h3 className="mb-3 text-[13px] font-medium text-ink-3">Receipts · {plural(draft.evidence.length, "verified quote")}</h3>
-          <ul className="space-y-2">
-            {draft.evidence.map((e, i) => (
-              <li key={i} className="rounded-xl bg-surface px-4 py-3 ring-1 ring-line">
-                <p className="text-[14px] leading-relaxed text-ink">“{e.quote}”</p>
-                <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
-                  <span className="inline-flex items-center gap-1 text-accent">
-                    <Check size={12} /> verified
-                  </span>
-                  <span>{e.source?.replace(/_/g, " ")}</span>
-                  {e.account ? <span>· {e.account}</span> : null}
-                  {e.occurred_at ? <span>· {timeAgo(e.occurred_at)}</span> : null}
-                  {e.url ? (
-                    <a href={e.url} target="_blank" rel="noopener noreferrer nofollow" className="ml-auto inline-flex items-center gap-0.5 hover:text-ink">
-                      Source <ArrowUpRight size={12} />
-                    </a>
-                  ) : null}
-                </p>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
+      <Receipts evidence={draft.evidence} />
     </article>
   );
 }
 
+/** The draft's receipts: one line until asked, each quote opening its signal in a sheet. */
+function Receipts({ evidence }: { evidence: Receipt[] }) {
+  const list = dedupeReceipts(evidence);
+  const [open, setOpen] = useState(false);
+  const [sheet, setSheet] = useState<Receipt | null>(null);
+  if (!list.length) return null;
+  const signals = new Set(list.map((e) => e.signal_id)).size;
+  return (
+    <section className="mt-8">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="receipts-list"
+        onClick={() => setOpen((o) => !o)}
+        className="group inline-flex items-center gap-1.5 text-[13px] font-medium text-ink-3 hover:text-ink"
+      >
+        <Check size={13} className="text-accent" aria-hidden />
+        {plural(list.length, "receipt")} from {plural(signals, "signal")}
+        <ChevronDown size={14} aria-hidden className={cx("transition-transform motion-reduce:transition-none", open && "rotate-180")} />
+      </button>
+      {open ? (
+        <ul id="receipts-list" className="mt-3 space-y-2">
+          {list.map((e, i) => (
+            <li key={`${e.signal_id}:${i}`} className="relative rounded-xl bg-surface px-4 py-3 ring-1 ring-line transition-colors hover:ring-line-strong">
+              <p className="text-[14px] leading-relaxed text-ink">
+                <L
+                  href={`/signals?id=${e.signal_id}`}
+                  onClick={(ev) => {
+                    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.button !== 0) return;
+                    ev.preventDefault();
+                    setSheet(e);
+                  }}
+                  className="after:absolute after:inset-0 after:rounded-xl focus-visible:outline-none focus-visible:after:ring-2 focus-visible:after:ring-accent"
+                >
+                  “{e.quote}”
+                </L>
+              </p>
+              <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-3">
+                <span>{sourceLabel(e.source)}</span>
+                {e.account ? <span>· {e.account}</span> : null}
+                {e.occurred_at ? <span>· {timeAgo(e.occurred_at)}</span> : null}
+                {e.url ? (
+                  <a href={e.url} target="_blank" rel="noopener noreferrer nofollow" className="relative z-10 ml-auto inline-flex items-center gap-0.5 hover:text-ink">
+                    Source <ArrowUpRight size={12} />
+                  </a>
+                ) : null}
+              </p>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {sheet ? <SignalSheet id={sheet.signal_id} quote={sheet.quote} onClose={() => setSheet(null)} /> : null}
+    </section>
+  );
+}
+
 /** j/k through the inbox list, anywhere on the page except inside text fields. */
-export function InboxKeys({ ids, current, tab }: { ids: string[]; current: string | null; tab: string }) {
+export function InboxKeys({ ids, current, listQuery }: { ids: string[]; current: string | null; /** Tab and filter, with a trailing "&". */ listQuery: string }) {
   const router = useRouter();
   const base = useBase();
   useEffect(() => {
@@ -391,11 +481,11 @@ export function InboxKeys({ ids, current, tab }: { ids: string[]; current: strin
       const next = k === "j" ? ids[i + 1] : i > 0 ? ids[i - 1] : undefined;
       if (!next) return;
       e.preventDefault();
-      router.push(`${base}/inbox?tab=${tab}&d=${next}`, { scroll: false });
+      router.push(`${base}/inbox?${listQuery}d=${next}`, { scroll: false });
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [ids, current, router, base, tab]);
+  }, [ids, current, router, base, listQuery]);
   useEffect(() => {
     if (current) document.querySelector(`[data-draft="${current}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current]);

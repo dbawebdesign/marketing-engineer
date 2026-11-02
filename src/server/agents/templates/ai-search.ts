@@ -4,6 +4,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { keepSupported, normalize, verifyEvidence } from "../evidence";
 import { sentences, tokens } from "../text";
 import { lines } from "./guardrails";
+import { meta, shortDate } from "../format";
 
 const READS = ["ai-search/buyer-questions", "ai-search/company-facts", "customer-truth/what-the-market-is-telling-us"];
 
@@ -181,7 +182,7 @@ function offline(rc: RunContext): Out {
   return {
     questions,
     fact_conflicts,
-    notes: `Offline engine: matched ${qs.length} buyer questions against ${facts.length} company facts by keyword overlap and assembled answers from fact lines only. Connect a Claude API key for answers written as prose (still grounded only in facts).`,
+    notes: `Answers assembled from ${facts.length} company-fact lines only.`,
   };
 }
 
@@ -259,9 +260,7 @@ Build this week's answer pack for ${rc.tenantName}.`,
     };
     const counts = { covered: qs.filter((q) => q.status === "covered").length, partial: qs.filter((q) => q.status === "partial").length, missing: qs.filter((q) => q.status === "missing").length };
     const label = { covered: "Covered", partial: "Partly covered", missing: "Not covered" } as const;
-    const body = `**${counts.covered} covered · ${counts.partial} partly covered · ${counts.missing} not covered** across ${qs.length} buyer questions. Answers use company facts only.
-
-${qs
+    const body = `${qs
   .map(
     (q, i) => `### ${i + 1}. ${q.question}
 **${label[q.status]}**${q.grounded ? "" : " · held back: " + q.problems.join("; ")}
@@ -281,22 +280,26 @@ Paste into the page that carries these answers (${publishable.length} of ${qs.le
 
 \`\`\`json
 ${JSON.stringify(jsonld, null, 2)}
-\`\`\`
-
----
-_${o.notes}_`;
+\`\`\``;
     return {
       summary: `${counts.covered} of ${qs.length} buyer questions covered by our facts, ${counts.partial} partly, ${counts.missing} not at all${conflicts.kept.length ? `; ${conflicts.kept.length} fact(s) contradicted by signals` : ""}.`,
       stats: { questions: qs.length, ...counts, held_back_ungrounded: ungrounded, fact_conflicts: conflicts.kept.length, missing_facts: qs.reduce((n, q) => n + q.missing_facts.length, 0), unverified_quotes: unverified + conflicts.unverifiedQuotes },
       drafts: [
         {
           type: "ai_answer_pack",
-          title: `AI answer pack · ${rc.now.toISOString().slice(0, 10)}`,
+          title: `AI answer pack · ${shortDate(rc.now)}`,
           body,
           payload: {
             questions: qs.map((q) => ({ question: q.question, status: q.status, answer: q.answer, facts_used: q.facts_used, missing_facts: q.missing_facts, placement: q.placement, grounded: q.grounded })),
             fact_conflicts: conflicts.kept.map((c) => ({ fact: c.fact, issue: c.issue })),
             jsonld,
+            meta: meta(
+              ["Coverage", `${counts.covered} covered, ${counts.partial} partly, ${counts.missing} not covered`],
+              ["Questions", qs.length],
+              ["In schema", `${publishable.length} of ${qs.length}`],
+              ["Held back", ungrounded ? `${ungrounded} answer${ungrounded === 1 ? "" : "s"} citing facts we don't have` : null],
+              ["Grounding", "Company facts only"],
+            ),
           },
           evidence: [...qs.flatMap((q) => q.evidence), ...conflicts.kept.flatMap((c) => c.evidence)],
         },

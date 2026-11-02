@@ -1,4 +1,4 @@
-import { ArrowRight, ChevronDown, Plus } from "lucide-react";
+import { ArrowRight, ChevronDown, Pencil, Plus } from "lucide-react";
 import type { Draft } from "@/server/services/drafts";
 import type { Experiment } from "@/server/services/experiments";
 import { L } from "./nav";
@@ -7,6 +7,8 @@ import { CopyButton } from "./copy-button";
 import { DraftPreview } from "./draft-preview";
 import { DemoButton } from "./demo-button";
 import { RunButton } from "./run-button";
+import { ExperimentActions } from "./experiment-actions";
+import { metaOf } from "@/lib/draft-meta";
 import { Badge, Dot, buttonClass, cx, plural, timeAgo } from "./ui";
 
 /* ------------------------------------------------------------------ shared */
@@ -37,60 +39,121 @@ const STATUS: Record<Draft["status"], { label: string; tone: "warn" | "accent" |
 
 const card = "rounded-2xl bg-surface ring-1 ring-line";
 
-/** "3 posts are waiting for your review  Review →" */
-export function PendingNote({ drafts, noun }: { drafts: Draft[]; noun: [string, string?] }) {
+/** Drafts of a system waiting for review, as a filtered inbox link. */
+export const systemInboxHref = (slug: string, d?: { id: string }) => `/inbox?system=${slug}${d ? `&d=${d.id}` : ""}`;
+
+const NOUN: Record<string, [string, string?]> = {
+  market_memo: ["memo"],
+  cockpit_memo: ["brief"],
+  post: ["post"],
+  asset_idea: ["asset idea"],
+  outbound_message: ["message"],
+  creative_batch: ["batch", "batches"],
+  ai_answer_pack: ["answer pack"],
+};
+
+/**
+ * "5 posts waiting · Review →" as one line, linking to the inbox filtered to this system,
+ * plus at most one preview when the page has nothing else showing that draft.
+ */
+export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[]; slug: string; preview?: boolean }) {
   if (!drafts.length) return null;
-  const one = drafts.length === 1;
+  const types = new Set(drafts.map((d) => d.type));
+  const noun = types.size === 1 ? (NOUN[drafts[0]!.type] ?? ["draft"]) : (["draft"] as [string]);
+  const first = drafts[0]!;
   return (
-    <L
-      href={one ? inboxHref(drafts[0]!) : "/inbox"}
-      className="group mb-4 flex items-center gap-3 rounded-xl bg-warn-soft/60 px-4 py-3 text-[14px] text-ink transition-colors hover:bg-warn-soft"
-    >
-      <Dot tone="warn" />
-      <span className="flex-1">
-        {one ? `A new ${noun[0]} is` : `${plural(drafts.length, noun[0], noun[1])} are`} waiting for your review
-      </span>
-      <span className="flex items-center gap-1 text-[13px] font-medium text-ink-2 group-hover:text-ink">
-        Review <ArrowRight size={14} />
-      </span>
-    </L>
+    <section className="mb-12" data-pending-block>
+      <L
+        href={drafts.length === 1 ? systemInboxHref(slug, first) : systemInboxHref(slug)}
+        className="group flex items-center gap-3 rounded-xl bg-warn-soft/60 px-4 py-2.5 text-[14px] text-ink transition-colors hover:bg-warn-soft"
+      >
+        <Dot tone="warn" />
+        <span className="min-w-0 flex-1">
+          {plural(drafts.length, noun[0], noun[1])} waiting
+        </span>
+        <span className="flex items-center gap-1 text-[13px] font-medium text-ink-2 group-hover:text-ink">
+          Review <ArrowRight size={14} aria-hidden />
+        </span>
+      </L>
+      {preview ? (
+        <div className="mt-3">
+          <DraftPreview
+            title={first.title}
+            body={first.body}
+            meta={metaOf(first.payload)}
+            createdAt={first.created_at}
+            href={systemInboxHref(slug, first)}
+            label={drafts.length > 1 ? "Next up" : undefined}
+            quiet
+          />
+        </div>
+      ) : null}
+    </section>
   );
 }
 
-/** The empty state for an artifact, pointing at the pending draft when there is one. */
-export function ArtifactEmpty({ pending, noun, idle }: { pending: Draft[]; noun: string; idle: { title: string; body: string } }) {
-  const p = pending[0];
+/** The empty state for an artifact: one compact line, not a tall box. */
+export function ArtifactEmpty({ idle }: { idle: { title: string; body: string } }) {
   return (
-    <div className="flex flex-col items-center rounded-2xl border border-dashed border-line-strong px-6 py-12 text-center">
-      <p className="font-medium text-ink">{p ? `A new ${noun} is waiting for your review` : idle.title}</p>
-      <p className="mt-1 max-w-sm text-sm text-ink-2">{p ? `Approve it and it shows up here.` : idle.body}</p>
-      {p ? (
-        <L href={inboxHref(p)} className={cx(buttonClass("primary", "sm"), "mt-5")}>
-          Review {noun} <ArrowRight size={14} />
-        </L>
-      ) : null}
+    <div className="rounded-xl border border-dashed border-line-strong px-5 py-4">
+      <p className="text-[14px] font-medium text-ink">{idle.title}</p>
+      <p className="mt-0.5 text-[13px] text-ink-2">{idle.body}</p>
     </div>
   );
 }
 
-export function DocView({ doc, title, pending, noun, idle }: { doc: { content: string; version: number; updated_at: string } | null; title: string; pending: Draft[]; noun: string; idle: { title: string; body: string } }) {
+/**
+ * An agent-kept document, document first. When there's no document yet, the pending
+ * draft (if any) previews in its place.
+ */
+export function DocView({
+  doc,
+  title,
+  pending,
+  slug,
+  idle,
+  credit,
+  editHref,
+}: {
+  doc: { content: string; version: number; updated_at: string } | null;
+  title: string;
+  pending: Draft[];
+  slug: string;
+  idle: { title: string; body: string };
+  /** Who stands behind the current version, e.g. "Approved by Maya". */
+  credit?: string | null;
+  /** Where to edit the document by hand, when the viewer may. */
+  editHref?: string | null;
+}) {
   const has = !!doc?.content.trim();
-  const p = pending[0];
   return (
     <>
-      {p ? (
-        <Block title={`New ${noun}`}>
-          <DraftPreview title={p.title} body={p.body} createdAt={p.created_at} href={inboxHref(p)} more={pending.length - 1} />
-        </Block>
-      ) : null}
-      {has || !p ? (
-        <Block title={title} meta={has ? `v${doc!.version} · updated ${timeAgo(doc!.updated_at)}` : null}>
+      <PendingBlock drafts={pending} slug={slug} preview={!has} />
+      {has || !pending.length ? (
+        <Block
+          title={title}
+          meta={
+            has ? (
+              <span className="flex items-center gap-3">
+                <span>
+                  v{doc!.version} · {credit ? `${credit} · ` : ""}
+                  {timeAgo(doc!.updated_at)}
+                </span>
+                {editHref ? (
+                  <L href={editHref} className={buttonClass("secondary", "sm")}>
+                    <Pencil size={13} aria-hidden /> Edit
+                  </L>
+                ) : null}
+              </span>
+            ) : null
+          }
+        >
           {has ? (
             <div className={cx(card, "p-6 sm:p-8")}>
               <Markdown>{doc!.content}</Markdown>
             </div>
           ) : (
-            <ArtifactEmpty pending={[]} noun={noun} idle={idle} />
+            <ArtifactEmpty idle={idle} />
           )}
         </Block>
       ) : null}
@@ -98,11 +161,16 @@ export function DocView({ doc, title, pending, noun, idle }: { doc: { content: s
   );
 }
 
-/** Recent drafts, identical titles collapsed, three rows at most. */
-export function DraftsList({ drafts, hide = [] }: { drafts: Draft[]; /** Drafts the page already shows in full. */ hide?: string[] }) {
+/**
+ * Everything the agent drafted that's already been decided, identical titles collapsed.
+ * Pending drafts live in the inbox line above; drafts the page shows in full stay out.
+ */
+export function DraftsList({ drafts, hide = [], slug }: { drafts: Draft[]; /** Drafts the page already shows in full. */ hide?: string[]; slug: string }) {
+  const hidden = new Set(hide);
   const groups: { d: Draft; earlier: number }[] = [];
   const seen = new Map<string, number>();
   for (const d of drafts) {
+    if (d.status === "pending" || hidden.has(d.id)) continue;
     const k = d.title.trim().toLowerCase();
     const i = seen.get(k);
     if (i === undefined) {
@@ -110,36 +178,29 @@ export function DraftsList({ drafts, hide = [] }: { drafts: Draft[]; /** Drafts 
       groups.push({ d, earlier: 0 });
     } else groups[i]!.earlier++;
   }
-  const hidden = new Set(hide);
-  const rows = groups.filter((g) => !hidden.has(g.d.id)).slice(0, 3);
-  // Nothing beyond what the page already shows: no second copy of it.
-  if (!rows.length && drafts.length) return null;
+  if (!groups.length) return null;
+  const rows = groups.slice(0, 5);
   return (
-    <Block title="Recent drafts" meta={drafts.length ? <L href="/inbox" className="hover:text-ink">See all in Inbox</L> : null}>
-      {rows.length ? (
-        <ul className={cx(card, "divide-y divide-line overflow-hidden")}>
-          {rows.map(({ d, earlier }) => {
-            const s = STATUS[d.status];
-            return (
-              <li key={d.id}>
-                <L href={inboxHref(d)} className="flex items-center gap-3 px-5 py-3.5 transition-colors hover:bg-subtle">
-                  <div className="min-w-0 flex-1">
-                    <p className="truncate text-[14px] font-medium">{d.title}</p>
-                    <p className="text-[13px] text-ink-3">
-                      {timeAgo(d.created_at)}
-                      {earlier ? ` · +${plural(earlier, "earlier version")}` : ""}
-                    </p>
-                  </div>
-                  <Badge tone={s.tone}>{s.label}</Badge>
-                  <ArrowRight size={14} className="text-ink-3" aria-hidden />
-                </L>
-              </li>
-            );
-          })}
-        </ul>
-      ) : (
-        <p className="text-[14px] text-ink-3">No drafts yet. Run the agent to get its first ones.</p>
-      )}
+    <Block title="Recent drafts" meta={groups.length > rows.length ? <L href={`/inbox?tab=approved&system=${slug}`} className="hover:text-ink">See all in Inbox</L> : null}>
+      <ul className={cx(card, "divide-y divide-line overflow-hidden")}>
+        {rows.map(({ d, earlier }) => {
+          const s = STATUS[d.status];
+          return (
+            <li key={d.id}>
+              <L href={inboxHref(d)} className="flex items-center gap-3 px-5 py-3 transition-colors hover:bg-subtle">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[14px] font-medium">{d.title}</p>
+                  <p className="text-[13px] text-ink-3">
+                    {timeAgo(d.reviewed_at ?? d.created_at)}
+                    {earlier ? ` · +${plural(earlier, "earlier version")}` : ""}
+                  </p>
+                </div>
+                <Badge tone={s.tone}>{s.label}</Badge>
+              </L>
+            </li>
+          );
+        })}
+      </ul>
     </Block>
   );
 }
@@ -154,57 +215,30 @@ const postText = (d: Draft) => {
 export function PostsLibrary({ drafts }: { drafts: Draft[] }) {
   const posts = drafts.filter((d) => d.type === "post");
   const approved = posts.filter((d) => d.status === "approved" || d.status === "published");
-  const pending = posts.filter((d) => d.status === "pending");
   return (
-    <>
-      {pending.length ? (
-        <Block title="Waiting for your review" meta={<L href={inboxHref(pending[0]!)} className="hover:text-ink">{plural(pending.length, "post")} · Review in Inbox</L>}>
-          <ul className="grid gap-4 sm:grid-cols-2">
-            {pending.map((d) => {
-              const { platform, text } = postText(d);
-              return (
-                <li key={d.id} className={cx(card, "flex flex-col p-5")}>
-                  <p className="mb-2.5 flex items-center gap-2 text-[13px] text-ink-3">
-                    <Dot tone="warn" /> {platform} · {timeAgo(d.created_at)}
-                  </p>
-                  <p className="line-clamp-[7] flex-1 whitespace-pre-line text-[14px] leading-relaxed text-ink">{text}</p>
-                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
-                    <L href={inboxHref(d)} className="flex items-center gap-1 text-[13px] font-medium text-ink-2 hover:text-ink">
-                      Review in Inbox <ArrowRight size={13} aria-hidden />
-                    </L>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        </Block>
-      ) : null}
-      <Block title="Approved posts" meta={approved.length ? plural(approved.length, "post") : null}>
-        {approved.length ? (
-          <ul className="grid gap-4 sm:grid-cols-2">
-            {approved.map((d) => {
-              const { platform, text } = postText(d);
-              return (
-                <li key={d.id} className={cx(card, "flex flex-col p-5")}>
-                  <p className="mb-2.5 text-[13px] text-ink-3">{platform}</p>
-                  <p className="line-clamp-[9] flex-1 whitespace-pre-line text-[14px] leading-relaxed text-ink">{text}</p>
-                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
-                    <L href={inboxHref(d)} className="text-[13px] text-ink-3 hover:text-ink">
-                      {d.status === "published" ? "Published" : "Approved"} {timeAgo(d.reviewed_at ?? d.created_at)}
-                    </L>
-                    <CopyButton text={text} />
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
-        ) : pending.length ? (
-          <p className="text-[14px] text-ink-3">Approve a post and it lands here, ready to copy.</p>
-        ) : (
-          <ArtifactEmpty pending={[]} noun="post" idle={{ title: "No approved posts yet", body: "Approve a post in your inbox and it lands here, ready to copy." }} />
-        )}
-      </Block>
-    </>
+    <Block title="Approved posts" meta={approved.length ? plural(approved.length, "post") : null}>
+      {approved.length ? (
+        <ul className="grid gap-4 sm:grid-cols-2">
+          {approved.map((d) => {
+            const { platform, text } = postText(d);
+            return (
+              <li key={d.id} className={cx(card, "flex flex-col p-5")}>
+                <p className="mb-2.5 text-[13px] text-ink-3">{platform}</p>
+                <p className="line-clamp-[9] flex-1 whitespace-pre-line text-[14px] leading-relaxed text-ink">{text}</p>
+                <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
+                  <L href={inboxHref(d)} className="text-[13px] text-ink-3 hover:text-ink">
+                    {d.status === "published" ? "Published" : "Approved"} {timeAgo(d.reviewed_at ?? d.created_at)}
+                  </L>
+                  <CopyButton text={text} />
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      ) : (
+        <ArtifactEmpty idle={{ title: "No approved posts yet", body: "Approve a post in your inbox and it lands here, ready to copy." }} />
+      )}
+    </Block>
   );
 }
 
@@ -216,7 +250,7 @@ const humanize = (s: string) => TRIGGER[s] ?? (s.charAt(0).toUpperCase() + s.sli
 function emailText(d: Draft) {
   const p = d.payload as { subject?: string };
   const top = d.body.split("\n---\n")[0] ?? d.body;
-  const email = top.replace(/^\*\*Subject:\*\*.*\n+/, "").trim();
+  const email = top.replace(/^\**Subject:\**.*\n+/i, "").trim();
   return `Subject: ${p.subject ?? ""}\n\n${email}`;
 }
 
@@ -269,7 +303,7 @@ export function OutboundQueue({ drafts }: { drafts: Draft[] }) {
           </div>
         </div>
       ) : (
-        <ArtifactEmpty pending={[]} noun="message" idle={{ title: "No accounts in the queue", body: "When an account shows a buying trigger, the agent drafts a message and it lands here." }} />
+        <ArtifactEmpty idle={{ title: "No accounts in the queue", body: "When an account shows a buying trigger, the agent drafts a message and it lands here." }} />
       )}
     </Block>
   );
@@ -304,7 +338,18 @@ const EXP_ORDER = ["running", "draft", "won", "lost"];
 const rank = (s: string) => (EXP_ORDER.includes(s) ? EXP_ORDER.indexOf(s) : 99);
 const EXP_LABEL: Record<string, string> = { running: "Running", draft: "Not started", won: "Won", lost: "Lost" };
 
-export function ExperimentBoard({ experiments }: { experiments: Experiment[] }) {
+export function ExperimentBoard({
+  experiments,
+  hookLab,
+  canWrite = false,
+  canRun = false,
+}: {
+  experiments: Experiment[];
+  /** The agent that writes hooks for a test, when this workspace has one. */
+  hookLab?: { id: string; name: string } | null;
+  canWrite?: boolean;
+  canRun?: boolean;
+}) {
   // The same test proposed twice shows once.
   const seen = new Set<string>();
   const list = experiments
@@ -330,16 +375,24 @@ export function ExperimentBoard({ experiments }: { experiments: Experiment[] }) 
               <div className="min-w-0">
                 <p className="text-[14px] font-medium">{e.name}</p>
                 {e.hypothesis ? <p className="mt-0.5 line-clamp-2 text-[13px] text-ink-2">{e.hypothesis}</p> : null}
+                {(canWrite || (canRun && hookLab)) && (e.status === "draft" || e.status === "running") ? (
+                  <ExperimentActions
+                    id={e.id}
+                    status={e.status}
+                    canWrite={canWrite}
+                    hookLab={canRun && hookLab ? { id: hookLab.id, name: hookLab.name, offer: e.hypothesis ? `${e.name}: ${e.hypothesis}` : e.name } : null}
+                  />
+                ) : null}
               </div>
               <span className="text-[13px] text-ink-3 sm:text-right">
                 {e.variants.length ? `${plural(e.variants.length, "variant")} · ` : ""}
-                {timeAgo(e.started_at ?? e.created_at)}
+                {e.status === "draft" ? `queued ${timeAgo(e.created_at)}` : e.status === "running" ? `started ${timeAgo(e.started_at ?? e.created_at)}` : timeAgo(e.started_at ?? e.created_at)}
               </span>
             </li>
           ))}
         </ul>
       ) : (
-        <ArtifactEmpty pending={[]} noun="test" idle={{ title: "No experiments yet", body: "Approve a batch of hooks and it starts an experiment here." }} />
+        <ArtifactEmpty idle={{ title: "No experiments yet", body: "Approve a market memo or a batch of hooks and its test shows up here." }} />
       )}
     </Block>
   );
@@ -350,12 +403,13 @@ export function CreativeBatch({ draft }: { draft: Draft | undefined }) {
   const p = draft.payload as { offer?: string; hypothesis?: string; angles?: { name: string; insight: string; hooks: string[] }[]; ads?: unknown[] };
   const angles = p.angles ?? [];
   if (!angles.length) return null;
-  const status = draft.status === "pending" ? "Waiting for your review" : draft.status === "rejected" ? "Rejected" : "Running as an experiment";
+  // The waiting line above already says it's pending; here it's just a way in.
+  const status = draft.status === "pending" ? "Open in Inbox" : draft.status === "rejected" ? "Rejected" : "Running as an experiment";
   return (
     <Block
       title="Latest batch"
       meta={
-        <L href={inboxHref(draft)} className={cx("hover:text-ink", draft.status === "pending" && "text-warn")}>
+        <L href={inboxHref(draft)} className="hover:text-ink">
           {status} · {timeAgo(draft.created_at)}
         </L>
       }
@@ -397,7 +451,7 @@ export function Coverage({ draft }: { draft: Draft | undefined }) {
   if (!draft || !qs.length)
     return (
       <Block title="Coverage">
-        <ArtifactEmpty pending={[]} noun="answer pack" idle={{ title: "No coverage read yet", body: "Run the agent to check which buyer questions your facts can answer." }} />
+        <ArtifactEmpty idle={{ title: "No coverage read yet", body: "Run the agent to check which buyer questions your facts can answer." }} />
       </Block>
     );
   const n = { covered: 0, partial: 0, missing: 0 };
@@ -433,8 +487,8 @@ export function Coverage({ draft }: { draft: Draft | undefined }) {
       <Block
         title="Buyer questions"
         meta={
-          <L href={inboxHref(draft)} className={cx("hover:text-ink", draft.status === "pending" && "text-warn")}>
-            {draft.status === "pending" ? "Answer pack waiting for review" : "From the answer pack"} · {timeAgo(draft.created_at)}
+          <L href={inboxHref(draft)} className="hover:text-ink">
+            {draft.status === "pending" ? "Open answer pack" : "From the answer pack"} · {timeAgo(draft.created_at)}
           </L>
         }
       >

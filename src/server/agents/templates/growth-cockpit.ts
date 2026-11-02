@@ -5,6 +5,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { keepSupported, verifyEvidence } from "../evidence";
 import { sentences, tokens, topPhrases } from "../text";
 import { bullets, findSentence } from "./guardrails";
+import { meta, shortDate } from "../format";
 
 const READS = ["customer-truth/what-the-market-is-telling-us", "cockpit/weekly-brief", "content/winning-hooks", "outbound/approved-angles"];
 
@@ -46,6 +47,8 @@ const label = (k: string) => { const w = k.replace(/_/g, " "); return w.endsWith
 const MIN_TOP = 10; // below this many clicks a per-100 rate is noise
 const r1 = (n: number) => Math.round(n * 10) / 10;
 const times = (a: number, b: number) => (b ? `${r1(a / b)}x` : "n/a");
+/** "2.3x the" or, when the gap is noise, "as many". */
+const asMuch = (a: number, b: number) => (b && a / b < 1.15 ? "as many" : `${times(a, b)} the`);
 
 type Row = { angle: string; kinds: Record<string, number> };
 function scoreboard(m: MetricsDigest | undefined) {
@@ -139,7 +142,7 @@ function offline(rc: RunContext): Out {
       const w1 = b1 ? winner.kinds[b1] ?? 0 : 0;
       const l1 = b1 ? loudest.kinds[b1] ?? 0 : 0;
       const extra = !b1 ? "" : w1 === l1 ? `; ${label(b1)} were level (${w1} each)` : w1 > l1 ? ` and ${l1 ? `${times(w1, l1)} the` : "more"} ${label(b1)} (${w1} vs ${l1})` : `, though it trailed on ${label(b1)} (${w1} vs ${l1})`;
-      angle_read = `"${loudest.angle}" drew ${times(loudest.kinds[top] ?? 0, winner.kinds[top] ?? 0)} the ${label(top)} of "${winner.angle}" (${loudest.kinds[top] ?? 0} vs ${winner.kinds[top] ?? 0}), but "${winner.angle}" produced ${times(winner.kinds[b0] ?? 0, loudest.kinds[b0] ?? 0)} the ${label(b0)} (${winner.kinds[b0] ?? 0} vs ${loudest.kinds[b0] ?? 0})${extra}. Per 100 ${label(top)}: ${per(winner)} ${label(b0)} vs ${per(loudest)}. Clicks are rewarding the wrong angle.`;
+      angle_read = `"${loudest.angle}" drew ${times(loudest.kinds[top] ?? 0, winner.kinds[top] ?? 0)} the ${label(top)} of "${winner.angle}" (${loudest.kinds[top] ?? 0} vs ${winner.kinds[top] ?? 0}), but "${winner.angle}" produced ${asMuch(winner.kinds[b0] ?? 0, loudest.kinds[b0] ?? 0)} ${label(b0)} (${winner.kinds[b0] ?? 0} vs ${loudest.kinds[b0] ?? 0})${extra}. Per 100 ${label(top)}: ${per(winner)} ${label(b0)} vs ${per(loudest)}. Clicks are rewarding the wrong angle.`;
     } else angle_read = `"${winner.angle}" led on both ${label(top)} (${winner.kinds[top] ?? 0}) and ${label(b0)} (${winner.kinds[b0] ?? 0}), at ${per(winner)} per 100 ${label(top)}. No conflict between attention and pipeline this week.`;
   }
 
@@ -241,7 +244,7 @@ function offline(rc: RunContext): Out {
 
   const headline =
     winner && loudest && top && b0 && winner.angle !== loudest.angle
-      ? `"${winner.angle}" got fewer ${label(top)} than "${loudest.angle}" but ${times(winner.kinds[b0] ?? 0, loudest.kinds[b0] ?? 0)} the ${label(b0)}.`
+      ? `"${winner.angle}" got fewer ${label(top)} than "${loudest.angle}" but ${asMuch(winner.kinds[b0] ?? 0, loudest.kinds[b0] ?? 0)} ${label(b0)}.`
       : winner
         ? `"${winner.angle}" led on ${label(b0!)} this week.`
         : "Not enough tagged results for a confident read this week.";
@@ -254,7 +257,7 @@ function offline(rc: RunContext): Out {
     repeated_objection,
     getting_louder,
     next_tests: next_tests.slice(0, 3),
-    notes: "Offline engine: numbers computed directly from metric events, experiments and the review queue; objections and rising topics from keyword themes over signals. Connect a Claude API key for a written read.",
+    notes: "Numbers from metric events, experiments and the review queue; objections and rising topics from signals.",
   };
 }
 
@@ -367,10 +370,8 @@ ${[...rows]
   .map((r) => `| ${r.angle} | ${kinds.map((k) => r.kinds[k] ?? 0).join(" | ")}${top && bottom[0] ? ` | ${per(r) < 0 ? "too few clicks" : per(r)}` : ""} |`)
   .join("\n")}`
       : "_No angle-tagged results this window._";
-    const date = rc.now.toISOString().slice(0, 10);
-    const body = `# Weekly brief · ${date}
-
-**${o.headline}**
+    const date = shortDate(rc.now);
+    const body = `**${o.headline}**
 
 ## What changed
 ${changed.map((c) => `- ${c.point}`).join("\n")}
@@ -390,10 +391,7 @@ ${objection && objection.count ? `**${objection.objection}** (${objection.count}
 ${louder.kept.map((l) => `- **${l.topic}**: ${l.detail}`).join("\n") || "- Nothing clearly rising this week."}
 
 ## Test next
-${o.next_tests.map((t, i) => `${i + 1}. **${t.name}**. ${t.hypothesis}  \n   Angle: ${t.angle} · Decided by: ${t.metric.replace(/_/g, " ")} · Why: ${t.why}`).join("\n")}
-
----
-_Window: last ${rc.spec.lookbackDays} days. ${o.notes}${badNums.length ? ` Check these numbers, they don't trace to the metrics: ${badNums.join(", ")}.` : ""}${droppedClaims ? ` ${droppedClaims} market claim(s) dropped for unverifiable receipts.` : ""}_`;
+${o.next_tests.map((t, i) => `${i + 1}. **${t.name}**. ${t.hypothesis}  \n   Angle: ${t.angle} · Decided by: ${t.metric.replace(/_/g, " ")} · Why: ${t.why}`).join("\n")}`;
     const evidence = [...changed.flatMap((c) => c.evidence), ...objEv, ...louder.kept.flatMap((l) => l.evidence)];
     return {
       summary: o.headline,
@@ -411,7 +409,18 @@ _Window: last ${rc.spec.lookbackDays} days. ${o.notes}${badNums.length ? ` Check
           type: "cockpit_memo",
           title: `Weekly brief · ${date}`,
           body,
-          payload: { headline: o.headline, next_tests: o.next_tests, angle_read: o.angle_read, scoreboard: rows },
+          payload: {
+            headline: o.headline,
+            next_tests: o.next_tests,
+            angle_read: o.angle_read,
+            scoreboard: rows,
+            meta: meta(
+              ["Window", `Last ${rc.spec.lookbackDays} days`],
+              ["Notes", o.notes],
+              ["Check", badNums.length ? `Numbers that don't trace to the metrics: ${badNums.join(", ")}` : null],
+              ["Dropped", droppedClaims ? `${droppedClaims} market claim${droppedClaims === 1 ? "" : "s"} without a verifiable quote` : null],
+            ),
+          },
           evidence,
         },
       ],

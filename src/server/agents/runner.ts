@@ -3,7 +3,7 @@ import { systemCtx } from "@/lib/ctx";
 import { aiEnabled, generate, MODELS, AiRefusal } from "@/lib/ai/provider";
 import { getTemplate } from "./registry";
 import type { AgentTemplate, JobSpec, MetricsDigest, RunContext } from "./types";
-import type { SignalLite } from "./evidence";
+import { dedupeEvidence, type SignalLite } from "./evidence";
 import { audit } from "../services/audit";
 import { readinessOf } from "./readiness";
 
@@ -132,7 +132,7 @@ export async function executeRun(tenantId: string, runId: string): Promise<void>
       for (const d of result.drafts) {
         await tx.query(
           `insert into drafts(tenant_id, run_id, agent_id, system, type, title, body, payload, evidence) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [tenantId, runId, agent.id, agent.system, d.type, d.title.slice(0, 300), d.body, d.payload ?? {}, JSON.stringify(d.evidence ?? [])],
+          [tenantId, runId, agent.id, agent.system, d.type, d.title.slice(0, 300), d.body, d.payload ?? {}, JSON.stringify(dedupeEvidence(d.evidence))],
         );
       }
       await tx.query(

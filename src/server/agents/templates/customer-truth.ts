@@ -1,7 +1,8 @@
 import { z } from "zod";
 import type { AgentTemplate, RunContext } from "../types";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
-import { keepSupported } from "../evidence";
+import { dedupeEvidence, keepSupported, type VerifiedEvidence } from "../evidence";
+import { meta, onePerItem, shortDate } from "../format";
 import { bestSentence, sentences, tokens, topPhrases } from "../text";
 
 const Ev = z.object({ signal_id: z.string(), quote: z.string() });
@@ -174,35 +175,35 @@ function offline(rc: RunContext): Out {
           why_this_week: winning ? "It's what the deals we won had in common." : "It's the most repeated phrase this week.",
         }
       : { name: "Collect more signal", hypothesis: "We need more customer notes before testing.", angle: "", channel: "other", metric: "Signals collected", why_this_week: "Too few signals this window." },
-    confidence_note: "Built from frequency and contrast analysis of this week's signals. Connect Claude for deeper synthesis.",
+    confidence_note: won.length + lost.length ? `Deal outcome known for ${won.length} won and ${lost.length} lost` : "No deal outcomes recorded yet",
   };
 }
 
-function md(o: Out, dropped: number) {
-  const ev = (e: { quote: string; source?: string; account?: string | null }[]) =>
-    e.map((x) => `  > "${x.quote}" (${[x.source?.replace(/_/g, " "), x.account].filter(Boolean).join(", ")})`).join("\n  >\n");
-  return `# What the market is telling us
+type V<T> = Omit<T, "evidence"> & { evidence: VerifiedEvidence[] };
+type Kept = Omit<Out, "changes" | "objections"> & { changes: V<Out["changes"][number]>[]; objections: V<Out["objections"][number]>[] };
 
-**${o.headline}**
+const receipt = (e: VerifiedEvidence | null) => (e ? `\n  > "${e.quote}" (${[e.source ? (SOURCE_WORD[e.source] ?? e.source).replace(/s$/, "") : null, e.account].filter(Boolean).join(", ")})` : "");
 
-## What changed
-${o.changes.map((c) => `- **${c.claim}** ${c.why_it_matters}\n${ev((c.evidence as never[]).slice(0, 2) as never)}`).join("\n")}
-
-## Their words, not ours
-${o.language.map((l) => `- "${l.phrase}": ${l.note}`).join("\n") || "- Nothing repeated enough yet."}
-
-## Objections
-${o.objections.map((x) => `- ${x.objection} _(${x.count})_\n${ev(x.evidence as never)}`).join("\n") || "- None surfaced in this window."}
-
-## Test this week
-**${o.recommended_test.name}**: ${o.recommended_test.angle}
-- Hypothesis: ${o.recommended_test.hypothesis}
-- Channel: ${o.recommended_test.channel.replace("_", " ")} · Metric: ${o.recommended_test.metric}
-- Why now: ${o.recommended_test.why_this_week}
-
----
-_${o.confidence_note}${dropped ? ` ${dropped} claim(s) were dropped because their quotes could not be verified against the source signals.` : ""}_
-`;
+/** The memo body: dense, one receipt per bullet (the full list stays on the draft's evidence). */
+function md(o: Kept) {
+  const used = new Set<string>();
+  const changes = o.changes.slice(0, 4);
+  const objections = o.objections.slice(0, 3);
+  const cq = onePerItem(changes, used);
+  const oq = onePerItem(objections, used);
+  // Phrases already named in a claim are not news twice.
+  const claims = changes.map((c) => c.claim.toLowerCase()).join(" ");
+  const words = o.language.filter((l) => !claims.includes(l.phrase.toLowerCase())).slice(0, 5);
+  const t = o.recommended_test;
+  return [
+    `**${o.headline}**`,
+    `## What changed\n${changes.map((c, i) => `- **${c.claim.replace(/\.$/, "")}.** ${c.why_it_matters}${receipt(cq[i]!)}`).join("\n")}`,
+    words.length ? `## Their words\n${words.map((l) => `"${l.phrase}" (${l.note.replace(/ mentions?$/, "")})`).join(" · ")}` : null,
+    objections.length ? `## Objections\n${objections.map((x, i) => `- **${x.objection}** (${x.count})${receipt(oq[i]!)}`).join("\n")}` : null,
+    t.angle ? `## Test this week\n**${t.name}.** ${t.hypothesis} Run it on ${t.channel.replace("_", " ")}; decided by ${t.metric.toLowerCase()}.` : null,
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export const customerTruth: AgentTemplate<typeof Schema> = {
@@ -248,10 +249,10 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
     const changes = keepSupported(o.changes, rc.signalMap);
     const objections = keepSupported(o.objections, rc.signalMap);
     const language = keepSupported(o.language, rc.signalMap);
-    const cleaned: Out = { ...o, changes: changes.kept as never, objections: objections.kept as never, language: language.kept as never };
+    const cleaned = { ...o, changes: changes.kept, objections: objections.kept, language: language.kept } as Kept;
     const dropped = changes.dropped + objections.dropped;
-    const evidence = [...changes.kept, ...objections.kept].flatMap((c) => c.evidence);
-    const date = rc.now.toISOString().slice(0, 10);
+    const evidence = dedupeEvidence([...changes.kept, ...objections.kept].flatMap((c) => c.evidence));
+    const date = shortDate(rc.now);
     return {
       summary: o.headline,
       stats: {
@@ -264,8 +265,17 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
         {
           type: "market_memo",
           title: `What the market is telling us · ${date}`,
-          body: md(cleaned, dropped),
-          payload: { headline: o.headline, recommended_test: o.recommended_test, language: cleaned.language.map((l) => l.phrase) },
+          body: md(cleaned),
+          payload: {
+            headline: o.headline,
+            recommended_test: o.recommended_test,
+            language: cleaned.language.map((l) => l.phrase),
+            meta: meta(
+              ["Signals", `${rc.signals.length} in the last ${rc.spec.lookbackDays} days`],
+              ["Confidence", o.confidence_note],
+              ["Dropped", dropped ? `${dropped} claim${dropped === 1 ? "" : "s"} without a verifiable quote` : null],
+            ),
+          },
           evidence,
         },
       ],

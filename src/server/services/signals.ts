@@ -5,19 +5,8 @@ import { sha256 } from "@/lib/crypto";
 import { badRequest } from "@/lib/errors";
 import { audit } from "./audit";
 
-export const SIGNAL_SOURCES = ["sales_call", "support_ticket", "churn_note", "crm_note", "review", "social", "interview", "product_event", "survey", "other"] as const;
-export const SOURCE_LABEL: Record<(typeof SIGNAL_SOURCES)[number], string> = {
-  sales_call: "Sales call",
-  support_ticket: "Support ticket",
-  churn_note: "Churn note",
-  crm_note: "CRM note",
-  review: "Review",
-  social: "Social",
-  interview: "Interview",
-  product_event: "Product event",
-  survey: "Survey",
-  other: "Other",
-};
+import { SIGNAL_SOURCES, SOURCE_LABEL } from "@/lib/signal-sources";
+export { SIGNAL_SOURCES, SOURCE_LABEL };
 
 export const SignalInput = z.object({
   source: z.enum(SIGNAL_SOURCES),
@@ -114,5 +103,25 @@ export async function deleteSignal(ctx: Ctx, id: string) {
     const r = await tx.query(`delete from signals where id = $1`, [id]);
     await audit(tx, ctx, "signals.delete", { type: "signal", id });
     return (r.rowCount ?? 0) > 0;
+  });
+}
+
+export type SignalUse = { id: string; title: string; system: string; status: string; created_at: string; quotes: string[] };
+
+/** One signal in full, plus every draft whose receipts cite it (newest first). */
+export async function getSignalDetail(ctx: Ctx, id: string) {
+  assertCan(ctx, "read");
+  return withTenant(ctx.tenantId, async (tx) => {
+    const s = await tx.query<Signal>(`select id, source, title, content, url, author, account, occurred_at, metadata from signals where id = $1`, [id]);
+    if (!s.rows[0]) return null;
+    const u = await tx.query<SignalUse>(
+      `select d.id, d.title, d.system, d.status, d.created_at,
+              coalesce((select array_agg(distinct e->>'quote') from jsonb_array_elements(d.evidence) e where e->>'signal_id' = $1), '{}') as quotes
+         from drafts d
+        where d.evidence @> jsonb_build_array(jsonb_build_object('signal_id', $1::text))
+        order by d.created_at desc, d.id limit 50`,
+      [id],
+    );
+    return { signal: s.rows[0], usedIn: u.rows };
   });
 }

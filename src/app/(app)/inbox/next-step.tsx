@@ -4,6 +4,7 @@ import { requireCtx } from "@/server/web/session";
 import { getDraft, type Draft } from "@/server/services/drafts";
 import { listAgents, type Agent } from "@/server/services/agents";
 import { signalStats } from "@/server/services/signals";
+import { getDoc } from "@/server/services/memory";
 import { todayState } from "@/server/services/review-extra";
 import { SYSTEM_META, type System } from "@/server/agents/types";
 import { slugForSystem } from "@/lib/systems";
@@ -11,7 +12,7 @@ import { L } from "@/components/nav";
 import { RunButton } from "@/components/run-button";
 import { DemoButton } from "@/components/demo-button";
 import { LiveRefresh } from "@/components/live-refresh";
-import { buttonClass, plural } from "@/components/ui";
+import { buttonClass, plural, timeAgo } from "@/components/ui";
 
 type Link = { href: string; label: string };
 type Step = { title: string; body: ReactNode; links: Link[]; run: string[]; tone?: "done" };
@@ -28,7 +29,7 @@ function afterApproval(d: Draft): Step {
           { href: "/s/truth", label: "View truth file" },
           { href: "/s/creative", label: "See the queued test" },
         ],
-        run: ["founder_content", "outbound_signal"],
+        run: ["founder_content", "outbound_signal", "creative_testing"],
         tone: "done",
       };
     case "cockpit_memo":
@@ -46,15 +47,21 @@ function afterApproval(d: Draft): Step {
   }
 }
 
-const WORKING: Record<string, string> = { founder_content: "Drafting posts…", outbound_signal: "Finding accounts…" };
+const WORKING: Record<string, string> = { founder_content: "Drafting posts…", outbound_signal: "Finding accounts…", creative_testing: "Writing hooks…" };
+
+/** The agents that build on the truth file, in the order they're worth running. */
+const DOWNSTREAM = ["founder_content", "outbound_signal", "creative_testing"];
+
+const list = (names: string[]) => (names.length < 2 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`);
 
 export async function InboxNextStep({ doneId }: { doneId: string | null }) {
   const ctx = await requireCtx();
-  const [done, agents, state, stats] = await Promise.all([
+  const [done, agents, state, stats, truth] = await Promise.all([
     doneId ? getDraft(ctx, doneId).catch(() => null) : null,
     listAgents(ctx),
     todayState(ctx),
     signalStats(ctx),
+    getDoc(ctx, "customer-truth/what-the-market-is-telling-us"),
   ]);
   const signals = stats.reduce((a, b) => a + b.total, 0);
   const bySystem = (s: string) => agents.find((a) => a.system === s);
@@ -144,7 +151,33 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
     );
   }
 
-  // Caught up, nothing just decided: point at the upstream agent.
+  // Caught up, nothing just decided. If the truth file moved since the downstream agents
+  // last ran, they're drafting from an old picture: running them is the next step.
+  const truthAt = state.approvedMemo && truth?.content.trim() ? new Date(truth.updated_at) : null;
+  const stale = truthAt
+    ? DOWNSTREAM.map(bySystem).filter((a): a is Agent => !!a && a.enabled !== false && (!a.last_run || new Date(a.last_run.created_at) < truthAt))
+    : [];
+  if (stale.length) {
+    const never = stale.filter((a) => !a.last_run);
+    return (
+      <Card title={`Truth file updated. ${stale.length === 1 ? `${stale[0]!.name} hasn’t` : `${plural(stale.length, "agent")} haven’t`} read it yet`} eyebrow={<><Check size={13} className="text-accent" /> Inbox is clear</>}>
+        <p>
+          The truth file changed {timeAgo(truth!.updated_at)} (v{truth!.version}).{" "}
+          {never.length === stale.length
+            ? `${list(stale.map((a) => a.name))} ${stale.length > 1 ? "have" : "has"} never run.`
+            : `${list(stale.map((a) => a.name))} last ran before that.`}{" "}
+          Run {stale.length > 1 ? "them" : "it"} to draft from what the market is saying now.
+        </p>
+        <Actions>{runButtons(stale.map((a) => a.system), true)}</Actions>
+        <div className="mt-4 flex flex-wrap gap-x-5 gap-y-2">
+          <L href="/s/truth" className="inline-flex items-center gap-1 text-sm text-ink-2 hover:text-ink">
+            View truth file <ArrowRight size={13} />
+          </L>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <Card title="Nothing waiting for you" eyebrow="Inbox is clear">
       <p>{state.approvedMemo ? "Run an agent when you want the next batch. Market pulse first if new signals came in." : "Run Market pulse to get this week’s memo. Everything else builds on it."}</p>

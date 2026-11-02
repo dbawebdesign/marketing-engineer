@@ -16,6 +16,9 @@ export function DocEditor({
   template,
   agentWritten,
   canEdit,
+  title,
+  meta,
+  startEditing = false,
 }: {
   docKey: string;
   content: string;
@@ -26,16 +29,26 @@ export function DocEditor({
   /** Docs an agent keeps up to date: show the empty state, not an open editor. */
   agentWritten?: boolean;
   canEdit: boolean;
+  /** The doc's name, with its quiet meta line; the Edit button sits beside it. */
+  title: React.ReactNode;
+  meta?: React.ReactNode;
+  /** Open in the editor (e.g. arriving from an Edit link elsewhere). */
+  startEditing?: boolean;
 }) {
-  const startsOpen = (c: string) => !c.trim() && canEdit && !agentWritten;
-  const [editing, setEditing] = useState(startsOpen(content));
+  const startsOpen = (c: string) => canEdit && !c.trim() && !agentWritten;
+  const [editing, setEditing] = useState(startsOpen(content) || (canEdit && startEditing));
   const [value, setValue] = useState(content);
   const [pending, start] = useTransition();
   const router = useRouter();
   const area = useRef<HTMLTextAreaElement>(null);
   const dirty = value !== content;
 
+  const seenRef = useRef(`${docKey}\n${canEdit}\n${content}`);
   useEffect(() => {
+    // Only a new doc or a saved version resets the editor, not the first render.
+    const k = `${docKey}\n${canEdit}\n${content}`;
+    if (seenRef.current === k) return;
+    seenRef.current = k;
     setValue(content);
     setEditing(startsOpen(content));
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -63,21 +76,32 @@ export function DocEditor({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing, dirty, value]);
 
+  const header = (
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
+        <h2 className="text-xl font-semibold tracking-tight">{title}</h2>
+        {meta ? <p className="mt-0.5 text-[13px] text-ink-3">{meta}</p> : null}
+      </div>
+      {canEdit && !editing ? (
+        <Button variant="secondary" size="sm" onClick={() => setEditing(true)}>
+          <Pencil size={13} /> {content.trim() ? "Edit" : "Write it yourself"}
+        </Button>
+      ) : null}
+    </div>
+  );
+
   if (!editing)
     return (
       <div>
+        {header}
         <div className="rounded-2xl bg-surface p-6 ring-1 ring-line sm:p-8">{preview}</div>
-        {canEdit ? (
-          <Button variant="secondary" size="sm" className="mt-4" onClick={() => setEditing(true)}>
-            <Pencil size={13} /> {content.trim() ? "Edit" : "Write it yourself"}
-          </Button>
-        ) : null}
       </div>
     );
 
   const empty = !value.trim();
   return (
     <div>
+      {header}
       <div className="rounded-2xl bg-surface ring-1 ring-line transition-shadow focus-within:ring-line-strong focus-within:shadow-soft">
         {(hint || template) && empty ? (
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-5 py-3.5 sm:px-6">

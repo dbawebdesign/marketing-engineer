@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
 import { L, NAV_ITEMS } from "./nav";
 import { Kbd, cx, plural, timeAgo } from "./ui";
 import { openShortcuts } from "./shortcuts";
@@ -26,7 +27,21 @@ const writeSeen = (s: Set<string>) => {
 const iconFor = (href: string) => NAV_ITEMS.find((n) => n.href === href)?.icon;
 
 /** The inbox's left column: system glyph, unread dot, strong selected state. */
-export function InboxList({ rows, selectedId, tab }: { rows: InboxRow[]; selectedId: string | null; tab: string }) {
+export function InboxList({
+  rows,
+  selectedId,
+  tab,
+  listQuery,
+  filter,
+}: {
+  rows: InboxRow[];
+  selectedId: string | null;
+  tab: string;
+  /** Tab and filter, with a trailing "&". */
+  listQuery: string;
+  /** The system the list is narrowed to, removable. */
+  filter?: { label: string; clearHref: string } | null;
+}) {
   // null until mounted, so server and first client render agree (no dots yet).
   const [seen, setSeen] = useState<Set<string> | null>(null);
   useEffect(() => {
@@ -41,6 +56,19 @@ export function InboxList({ rows, selectedId, tab }: { rows: InboxRow[]; selecte
   const unread = tab === "pending" && seen ? rows.filter((r) => !seen.has(r.id)).length : 0;
   return (
     <div className="lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-3rem)] lg:flex-col">
+      {filter ? (
+        <div className="mb-2 px-3">
+          <L
+            href={filter.clearHref}
+            data-inbox-filter
+            aria-label={`Remove filter: ${filter.label}`}
+            className="group inline-flex h-7 items-center gap-1.5 rounded-md bg-subtle pl-2.5 pr-2 text-[12.5px] text-ink-2 ring-1 ring-line hover:text-ink"
+          >
+            <span className="text-ink-3">System</span> {filter.label}
+            <X size={12} aria-hidden className="text-ink-3 group-hover:text-ink" />
+          </L>
+        </div>
+      ) : null}
       <div className="mb-2 flex h-6 items-center justify-between gap-3 px-3.5 text-xs text-ink-3">
         <span className="truncate tnum" title={unread ? `${unread} not opened yet` : undefined}>
           {tab === "pending" ? `${rows.length} to review` : plural(rows.length, "draft")}
@@ -60,7 +88,7 @@ export function InboxList({ rows, selectedId, tab }: { rows: InboxRow[]; selecte
           return (
             <li key={d.id} data-draft={d.id}>
               <L
-                href={`/inbox?tab=${tab}&d=${d.id}`}
+                href={`/inbox?${listQuery}d=${d.id}`}
                 scroll={false}
                 aria-current={on ? "true" : undefined}
                 className={cx(

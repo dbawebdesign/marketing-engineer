@@ -3,8 +3,10 @@ import type { AgentTemplate, DraftInput, RunContext } from "../types";
 import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported, normalize } from "../evidence";
-import { clip } from "../text";
 import { bullets, docText, findBanned, parseBanned, renderBanned, techsOf, words } from "./guardrails";
+import { draftTitle, meta, shippable } from "../format";
+
+const TRIGGER_LABEL: Record<string, string> = { hiring: "Hiring", new_location: "New location", bad_review: "Bad review", funding: "Funding", leadership_change: "New leader", tech_change: "Tool change", other: "Trigger" };
 
 const READS = ["outbound/icp", "outbound/approved-angles", "outbound/banned-language", "customer-truth/what-the-market-is-telling-us"];
 const FIT_THRESHOLD = 60;
@@ -26,7 +28,7 @@ const Schema = z.object({
         angle: z.string().describe("Which approved angle this message uses."),
         subject: z.string().describe("2-6 words, lowercase is fine, no clickbait."),
         first_line: z.string().describe("Opens on the specific trigger and quotes it verbatim inside double quotes."),
-        email: z.string().describe(`The full email including the first line, under ${MAX_WORDS} words. Greeting may use {{first_name}}. One soft ask.`),
+        email: z.string().describe(`The full email including the first line, under ${MAX_WORDS} words. Greeting may use {{first_name}}. One soft ask. Only the email: no subject line, labels or notes.`),
         evidence: z.array(Ev).describe("The trigger signal (and any proof point) with verbatim quotes."),
       }),
     )
@@ -194,7 +196,7 @@ function offline(rc: RunContext): Out {
   return {
     accounts,
     skipped,
-    notes: `Offline engine: scored ${accounts.length} accounts with trigger events against the ICP (size range, commercial work, listed triggers) and wrote one message per trigger type. Connect a Claude API key for messages written from scratch per account.`,
+    notes: `Scored ${accounts.length} accounts with trigger events against the ICP (size range, commercial work, listed triggers).`,
   };
 }
 
@@ -275,20 +277,26 @@ Write this run's outbound for ${rc.tenantName}.`,
       if (!grounded) ungrounded++;
       const n = countWords(a.email);
       if (n >= MAX_WORDS) overLength++;
-      const flags = [!grounded ? "First line does not quote the trigger verbatim: check before sending." : null, n >= MAX_WORDS ? `${n} words: trim under ${MAX_WORDS}.` : null].filter(Boolean);
+      const check = [!grounded ? "First line doesn't quote the trigger verbatim" : null, n >= MAX_WORDS ? `Trim under ${MAX_WORDS} words` : null].filter(Boolean).join("; ");
+      const subject = shippable(a.subject).replace(/^subject:\s*/i, "");
+      const email = shippable(a.email.replace(/^\s*\**subject:?\**:?.*\n+/i, ""));
+      const body = `Subject: ${subject}\n\n${email}`;
       drafts.push({
         type: "outbound_message",
-        title: clip(`${a.account}: ${a.subject}`, 90),
-        body: `**Subject:** ${a.subject}
-
-${a.email}
-
----
-**Fit ${a.fit_score}/100** · ${a.fit_reasons}
-**Trigger:** ${a.trigger.replace(/_/g, " ")} · **Why now:** ${a.why_now}
-**Angle:** ${a.angle} · ${n} words
-${flags.length ? `\n> ${flags.join(" ")}` : ""}`,
-        payload: { account: a.account, trigger: a.trigger, fit_score: a.fit_score, subject: a.subject, first_line: a.first_line, why_now: a.why_now, angle: a.angle, words: n },
+        title: draftTitle(body, `${a.account} · ${TRIGGER_LABEL[a.trigger] ?? "Trigger"}`, a.account),
+        body,
+        payload: {
+          account: a.account,
+          trigger: a.trigger,
+          fit_score: a.fit_score,
+          fit_reasons: a.fit_reasons,
+          subject,
+          first_line: a.first_line,
+          why_now: a.why_now,
+          angle: a.angle,
+          words: n,
+          meta: meta(["Check", check || null], ["Fit", `${a.fit_score}/100`], ["Why now", a.why_now], ["Angle", a.angle], ["Length", `${n} words`]),
+        },
         evidence: a.evidence,
       });
     }

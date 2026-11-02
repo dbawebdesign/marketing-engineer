@@ -46,16 +46,6 @@ export function scheduleLabel(a: { enabled: boolean; schedule_cron: string | nul
   return describeCron(a.schedule_cron) ?? "Custom schedule";
 }
 
-/** Status dot for an agent: grey paused or never run, green last run OK, amber failed, pulsing while running. */
-export function agentState(a: { enabled: boolean; last_run: { status: string } | null }): { tone: "neutral" | "accent" | "warn"; pulse: boolean; label: string } {
-  const st = a.last_run?.status;
-  if (st === "running" || st === "queued") return { tone: "accent", pulse: true, label: "Running" };
-  if (!a.enabled) return { tone: "neutral", pulse: false, label: "Paused" };
-  if (!st) return { tone: "neutral", pulse: false, label: "Never run" };
-  if (st === "failed") return { tone: "warn", pulse: false, label: "Last run failed" };
-  return { tone: "accent", pulse: false, label: "Last run succeeded" };
-}
-
 /** Customer-facing name for a model id: never the raw id. */
 export function modelTierLabel(model: string | null | undefined, deepId: string) {
   if (!model || model === "offline") return null;

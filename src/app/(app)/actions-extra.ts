@@ -3,6 +3,8 @@ import { revalidatePath } from "next/cache";
 import { act, requireCtx } from "@/server/web/session";
 import { searchAll } from "@/server/services/search";
 import { firstDraftOfRun, undoReview } from "@/server/services/review-extra";
+import { getSignalDetail } from "@/server/services/signals";
+import { moveExperiment, type ExperimentMove } from "@/server/services/experiments";
 import { isUuid } from "@/lib/db";
 import { badRequest } from "@/lib/errors";
 
@@ -28,5 +30,24 @@ export async function runFirstDraftAction(runId: string) {
     if (!isUuid(runId)) throw badRequest("Unknown run");
     const ctx = await requireCtx();
     return firstDraftOfRun(ctx, runId);
+  });
+}
+
+export async function signalDetailAction(id: string) {
+  return act(async () => {
+    if (!isUuid(id)) throw badRequest("Unknown signal");
+    const ctx = await requireCtx();
+    return getSignalDetail(ctx, id);
+  });
+}
+
+export async function moveExperimentAction(id: string, move: ExperimentMove) {
+  return act(async () => {
+    if (!isUuid(id)) throw badRequest("Unknown experiment");
+    if (move !== "start" && move !== "won" && move !== "lost") throw badRequest("Unknown move");
+    const ctx = await requireCtx();
+    const r = await moveExperiment(ctx, id, move);
+    revalidatePath("/", "layout");
+    return r;
   });
 }

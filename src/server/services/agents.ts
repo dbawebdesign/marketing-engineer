@@ -20,7 +20,8 @@ export type Agent = {
   timezone: string;
   enabled: boolean;
   next_run_at: string | null;
-  last_run: { id: string; status: string; created_at: string; summary: string | null } | null;
+  /** The latest run, with how many drafts it produced. */
+  last_run: { id: string; status: string; created_at: string; finished_at: string | null; summary: string | null; drafts: number } | null;
   rules_count: number;
   approval_rate: number | null;
   /** Whether the agent's window has enough input to draft from. */
@@ -49,7 +50,8 @@ export async function listAgents(ctx: Ctx, opts: { readiness?: boolean } = {}): 
   return withTenant(ctx.tenantId, async (tx) => {
     const r = await tx.query<Omit<Agent, "readiness">>(
       `select a.id, a.template, a.system, a.name, a.spec, a.model, a.schedule_cron, a.timezone, a.enabled, a.next_run_at,
-              (select row_to_json(x) from (select id, status, created_at, summary from runs where agent_id = a.id order by created_at desc limit 1) x) as last_run,
+              (select row_to_json(x) from (select r.id, r.status, r.created_at, r.finished_at, r.summary, (select count(*)::int from drafts d where d.run_id = r.id) as drafts
+                                             from runs r where r.agent_id = a.id order by r.created_at desc limit 1) x) as last_run,
               (select count(*)::int from agent_rules where agent_id = a.id and active) as rules_count,
               (select case when count(*) filter (where status <> 'pending') = 0 then null
                       else round(100.0 * count(*) filter (where status in ('approved','published')) / count(*) filter (where status <> 'pending'))::int end
@@ -70,8 +72,10 @@ export async function getAgent(ctx: Ctx, id: string) {
       `select id, rule, source, created_at from agent_rules where agent_id = $1 and active order by created_at desc`,
       [id],
     );
-    const runs = await tx.query<{ id: string; status: string; trigger: string; summary: string | null; error: string | null; created_at: string; finished_at: string | null; cost_usd: string; model: string | null; input: Record<string, unknown> }>(
-      `select id, status, trigger, summary, error, created_at, finished_at, cost_usd, model, input from runs where agent_id = $1 order by created_at desc limit 20`,
+    const runs = await tx.query<{ id: string; status: string; trigger: string; summary: string | null; error: string | null; created_at: string; finished_at: string | null; cost_usd: string; model: string | null; input: Record<string, unknown>; drafts: number }>(
+      `select r.id, r.status, r.trigger, r.summary, r.error, r.created_at, r.finished_at, r.cost_usd, r.model, r.input,
+              (select count(*)::int from drafts d where d.run_id = r.id) as drafts
+         from runs r where r.agent_id = $1 order by r.created_at desc limit 20`,
       [id],
     );
     return { agent: agent!, rules: rules.rows, runs: runs.rows };

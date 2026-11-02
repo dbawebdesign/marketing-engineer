@@ -4,6 +4,7 @@ import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
 import { bullets, findBanned, findSentence, parseBanned, renderBanned, techsOf } from "./guardrails";
+import { draftTitle, fromSignals, meta } from "../format";
 
 const READS = ["creative/offers", "customer-truth/what-the-market-is-telling-us", "outbound/approved-angles", "content/winning-hooks", "content/founder-voice", "outbound/banned-language"];
 const CHANNELS = ["paid_social", "linkedin", "x", "search", "landing_page", "email", "outbound", "other"] as const;
@@ -185,7 +186,7 @@ function offline(rc: RunContext): Out {
     metric: isPilot ? "qualified_reply" : "demo_request",
     angles,
     ads,
-    notes: `Offline engine: ${angles.length} angles found in ${sigs.length} signals (specific loss, invisible leak, broken handoff, best-tech habit, customer proof). Run 2-3 hooks per angle first; cut angles, not hooks, after the first week.`,
+    notes: `Run 2-3 hooks per angle first; cut angles, not hooks, after the first week.`,
   };
 }
 
@@ -263,9 +264,8 @@ Write the batch for ${rc.tenantName}.`;
       ...ads.map((x, i) => ({ id: `ad${i + 1}`, label: `Ad ${i + 1} · ${x.headline}`, content: `${x.headline}\n\n${x.primary_text}\n\nVisual: ${x.visual}`, angle: x.angle })),
     ];
     const nHooks = angles.reduce((n, a) => n + a.hooks.length, 0);
-    const body = `**Offer:** ${o.offer}
-**Hypothesis:** ${o.hypothesis}
-**Channel:** ${o.channel.replace("_", " ")} · **Decided by:** ${o.metric.replace(/_/g, " ")}
+    const [offerName, ...offerRest] = o.offer.split(/:\s+/);
+    const body = `${o.hypothesis}
 
 ## Hooks
 ${angles
@@ -273,17 +273,23 @@ ${angles
   .join("\n\n")}
 
 ## Ad concepts
-${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_text}  \nVisual: ${x.visual}`).join("\n\n")}
-
----
-_${nHooks} hooks, ${ads.length} ads across ${angles.length} angles. Approving starts an experiment with these variants. ${o.notes}${sup.dropped ? ` ${sup.dropped} angle(s) dropped for unverifiable receipts.` : ""}${bannedHooks ? ` ${bannedHooks} line(s) removed for banned language.` : ""}_`;
+${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_text}  \nVisual: ${x.visual}`).join("\n\n")}`;
+    const metaRow = meta(
+      ["Offer", offerRest.join(": ") || null],
+      ["Channel", o.channel.replace("_", " ")],
+      ["Decided by", o.metric.replace(/_/g, " ")],
+      ["Batch", `${nHooks} hooks, ${ads.length} ads, ${angles.length} angles`],
+      ["From", fromSignals(sup.kept.flatMap((a) => a.evidence), rc.signalMap)],
+      ["Removed", [sup.dropped ? `${sup.dropped} angle${sup.dropped === 1 ? "" : "s"} without a verifiable quote` : null, bannedHooks ? `${bannedHooks} line${bannedHooks === 1 ? "" : "s"} with banned language` : null].filter(Boolean).join("; ") || null],
+      ["Notes", o.notes],
+    );
     return {
       summary: `${nHooks} hooks and ${ads.length} ad concepts across ${angles.length} angles for "${o.offer.split(":")[0]}".`,
       stats: { angles: angles.length, hooks: nHooks, ads: ads.length, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
       drafts: [
         {
           type: "creative_batch",
-          title: `Hook lab: ${o.offer.split(":")[0]}`.slice(0, 90),
+          title: draftTitle(body, offerName),
           body,
           payload: {
             offer: o.offer,
@@ -293,6 +299,7 @@ _${nHooks} hooks, ${ads.length} ads across ${angles.length} angles. Approving st
             angles: angles.map((a) => ({ name: a.name, insight: a.insight, hooks: a.hooks })),
             ads,
             variants,
+            meta: metaRow,
           },
           evidence: sup.kept.flatMap((a) => a.evidence),
         },

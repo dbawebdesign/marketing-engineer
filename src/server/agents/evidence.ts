@@ -57,3 +57,16 @@ export function keepSupported<T extends { evidence: Evidence[] }>(claims: T[], s
   }
   return { kept, dropped, unverifiedQuotes };
 }
+
+/** One receipt per (signal, quote): the same sentence cited by two claims is listed once. */
+export function dedupeEvidence<T extends Evidence>(items: T[] | undefined): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const e of items ?? []) {
+    const key = `${e.signal_id}:${normalize(e.quote ?? "")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(e);
+  }
+  return out;
+}
