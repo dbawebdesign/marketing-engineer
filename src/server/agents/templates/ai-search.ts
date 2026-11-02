@@ -190,7 +190,7 @@ const nums = (s: string) => (s.match(/\$?\d[\d,.]*%?/g) ?? []).map((n) => n.repl
 export const aiSearch: AgentTemplate<typeof Schema> = {
   id: "ai-visibility",
   system: "ai_search",
-  name: "AI visibility",
+  name: "Answer builder",
   tagline: "Writes answer-ready copy and FAQ schema for the questions buyers ask AI assistants.",
   tier: "deep",
   defaultCron: "0 9 * * 4",

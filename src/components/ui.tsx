@@ -142,3 +142,8 @@ export function timeAgo(d: string | Date | null | undefined) {
   if (s < 86400 * 7) return `${Math.round(s / 86400)}d ago`;
   return t.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
+
+/** "1 receipt", "3 receipts", "1 reply" / "2 replies". */
+export function plural(n: number, one: string, many?: string) {
+  return `${n} ${n === 1 ? one : (many ?? (one.endsWith("y") && !/[aeiou]y$/.test(one) ? one.slice(0, -1) + "ies" : one + "s"))}`;
+}

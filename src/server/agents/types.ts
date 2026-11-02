@@ -10,7 +10,7 @@ export const SYSTEM_META: Record<System, { label: string; short: string; blurb: 
   founder_content: { label: "Founder content", short: "Content", blurb: "Turns real customer pain into posts in the founder's voice." },
   outbound_signal: { label: "Outbound signals", short: "Outbound", blurb: "Reaches the right accounts when timing hurts." },
   creative_testing: { label: "Creative testing", short: "Creative", blurb: "One offer, many angles, measured." },
-  ai_search: { label: "AI search visibility", short: "AI search", blurb: "Makes the company easy for AI assistants to understand and cite." },
+  ai_search: { label: "AI search", short: "AI search", blurb: "Makes the company easy for AI assistants to understand and cite." },
   growth_cockpit: { label: "Growth cockpit", short: "Cockpit", blurb: "The weekly read: what changed, what won, what to test next." },
 };
 

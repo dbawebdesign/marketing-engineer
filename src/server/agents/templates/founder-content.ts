@@ -227,7 +227,7 @@ function postText(p: Post) {
 export const founderContent: AgentTemplate<typeof Schema> = {
   id: "content-drafter",
   system: "founder_content",
-  name: "Founder content drafter",
+  name: "Content drafter",
   tagline: "Turns this week's customer pain into posts in the founder's voice.",
   tier: "fast",
   defaultCron: "0 8 * * 2",

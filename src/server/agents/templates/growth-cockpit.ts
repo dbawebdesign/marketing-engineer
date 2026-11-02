@@ -281,7 +281,7 @@ function allowedNumbers(m: MetricsDigest | undefined, rc: RunContext) {
 export const growthCockpit: AgentTemplate<typeof Schema> = {
   id: "weekly-cockpit",
   system: "growth_cockpit",
-  name: "Weekly cockpit",
+  name: "Weekly review",
   tagline: "Monday's read: what changed, which angle drove pipeline, what to test next.",
   tier: "deep",
   defaultCron: "0 7 * * 1",
