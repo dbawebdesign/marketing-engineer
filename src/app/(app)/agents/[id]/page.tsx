@@ -10,7 +10,7 @@ import { slugForSystem } from "@/lib/systems";
 import { modelTierLabel } from "@/lib/schedule";
 import { L } from "@/components/nav";
 import { AgentEditor, RulesEditor } from "@/components/agent-editor";
-import { RunButton } from "@/components/run-button";
+import { AgentRun } from "@/components/run-button";
 import { Dot, plural, timeAgo } from "@/components/ui";
 
 export const metadata = { title: "Agent" };
@@ -44,7 +44,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
       </p>
       <div className="mb-8 mt-1 flex flex-wrap items-end justify-between gap-4">
         <h1 className="text-[26px] font-semibold tracking-[-0.02em]">{agent.name}</h1>
-        {can(ctx.role, "agents:run") ? <RunButton agentId={agent.id} /> : null}
+        {can(ctx.role, "agents:run") ? <AgentRun agentId={agent.id} readiness={agent.readiness} size="md" /> : null}
       </div>
       <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_300px]">
         <section>
@@ -84,6 +84,7 @@ export default async function AgentPage({ params }: { params: Promise<{ id: stri
                       ) : null}
                     </div>
                     {r.error ? <p className="mt-1 pl-3.5 text-[13px] text-warn">{r.error}</p> : null}
+                    {stats.nothing && r.summary ? <p className="mt-0.5 pl-3.5 text-[13px] text-ink-3">{r.summary}</p> : null}
                     {stats.dropped_claims ? <p className="mt-0.5 pl-3.5 text-[13px] text-ink-3">{plural(stats.dropped_claims, "unsupported claim")} dropped</p> : null}
                   </li>
                 );

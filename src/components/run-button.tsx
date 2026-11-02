@@ -1,12 +1,13 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Play, LoaderCircle } from "lucide-react";
+import { Play, LoaderCircle, Plus } from "lucide-react";
+import type { Readiness } from "@/server/agents/readiness";
 import { runAgentAction, runStatusAction } from "@/app/(app)/actions";
 import { runFirstDraftAction } from "@/app/(app)/actions-extra";
-import { Button, cx } from "./ui";
+import { Button, buttonClass, cx } from "./ui";
 import { toast } from "./toast";
-import { useBase } from "./nav";
+import { L, useBase } from "./nav";
 
 /** Runs being followed right now; LiveRefresh holds off so a follower can finish and navigate. */
 export const following = { n: 0 };
@@ -79,7 +80,7 @@ export function RunButton({
 }: {
   agentId: string;
   label?: string;
-  variant?: "primary" | "secondary";
+  variant?: "primary" | "secondary" | "ghost";
   input?: Record<string, unknown>;
   size?: "sm" | "md";
   workingLabel?: string;
@@ -122,5 +123,39 @@ export function RunButton({
       {busy ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : <Play size={13} className="fill-current" />}
       <span aria-live="polite">{text}</span>
     </Button>
+  );
+}
+
+/**
+ * The right next action for an agent: Run when its window has enough to read,
+ * otherwise "Add signals" first, with a quiet Run kept only if there's at least one signal.
+ */
+export function AgentRun({
+  agentId,
+  readiness,
+  size = "sm",
+  label = "Run now",
+  quiet = false,
+  className,
+  activeRunId,
+}: {
+  agentId: string;
+  readiness: Readiness | null | undefined;
+  size?: "sm" | "md";
+  label?: string;
+  /** In lists: no black buttons. */
+  quiet?: boolean;
+  className?: string;
+  activeRunId?: string | null;
+}) {
+  if (!readiness || readiness.ready || activeRunId)
+    return <RunButton agentId={agentId} size={size} label={label} variant={quiet ? "secondary" : "primary"} className={className} activeRunId={activeRunId} />;
+  return (
+    <span className={cx("flex items-center gap-1.5", className)}>
+      {readiness.signals > 0 ? <RunButton agentId={agentId} size={size} label="Run" variant="ghost" /> : null}
+      <L href="/signals?add=1" className={buttonClass(quiet ? "secondary" : "primary", size)} title={readiness.reason ?? undefined}>
+        <Plus size={14} aria-hidden /> Add signals
+      </L>
+    </span>
   );
 }

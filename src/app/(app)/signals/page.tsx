@@ -46,7 +46,9 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
             <form className="relative shrink-0" role="search">
               {source ? <input type="hidden" name="source" value={source} /> : null}
               <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
+              {/* Browser extensions and autofill restyle search inputs (e.g. caret-color) before hydration. */}
               <input
+                suppressHydrationWarning
                 name="q"
                 type="search"
                 defaultValue={q}

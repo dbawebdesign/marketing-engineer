@@ -7,6 +7,7 @@ import { getTemplate, TEMPLATES } from "../agents/registry";
 import type { JobSpec, System } from "../agents/types";
 import { DAILY_RUN_LIMIT, enqueue, nextRun, scheduleProblem } from "../jobs";
 import { audit } from "./audit";
+import { countInputs, readinessOf, type Readiness } from "../agents/readiness";
 
 export type Agent = {
   id: string;
@@ -22,12 +23,31 @@ export type Agent = {
   last_run: { id: string; status: string; created_at: string; summary: string | null } | null;
   rules_count: number;
   approval_rate: number | null;
+  /** Whether the agent's window has enough input to draft from. */
+  readiness: Readiness | null;
 };
 
-export async function listAgents(ctx: Ctx): Promise<Agent[]> {
+/** Attach readiness using the same window and sources the runner reads. */
+async function withReadiness(tx: Tx, rows: Omit<Agent, "readiness">[]): Promise<Agent[]> {
+  const out: Agent[] = [];
+  for (const a of rows) {
+    const tpl = getTemplate(a.template);
+    if (!tpl) {
+      out.push({ ...a, readiness: null });
+      continue;
+    }
+    const days = Math.min(Math.max(Number(a.spec?.lookbackDays ?? tpl.spec.lookbackDays) || 7, 1), 365);
+    const c = await countInputs(tx, tpl, days);
+    out.push({ ...a, readiness: readinessOf(tpl, c.signals, c.metrics, days) });
+  }
+  return out;
+}
+
+/** `readiness` counts each agent's input window; pages that show Run ask for it. */
+export async function listAgents(ctx: Ctx, opts: { readiness?: boolean } = {}): Promise<Agent[]> {
   assertCan(ctx, "read");
   return withTenant(ctx.tenantId, async (tx) => {
-    const r = await tx.query<Agent>(
+    const r = await tx.query<Omit<Agent, "readiness">>(
       `select a.id, a.template, a.system, a.name, a.spec, a.model, a.schedule_cron, a.timezone, a.enabled, a.next_run_at,
               (select row_to_json(x) from (select id, status, created_at, summary from runs where agent_id = a.id order by created_at desc limit 1) x) as last_run,
               (select count(*)::int from agent_rules where agent_id = a.id and active) as rules_count,
@@ -36,15 +56,16 @@ export async function listAgents(ctx: Ctx): Promise<Agent[]> {
                  from drafts where agent_id = a.id) as approval_rate
          from agents a order by a.created_at`,
     );
-    return r.rows;
+    return opts.readiness ? withReadiness(tx, r.rows) : r.rows.map((a) => ({ ...a, readiness: null }));
   });
 }
 
 export async function getAgent(ctx: Ctx, id: string) {
   assertCan(ctx, "read");
   return withTenant(ctx.tenantId, async (tx) => {
-    const a = await tx.query<Agent>(`select id, template, system, name, spec, model, schedule_cron, timezone, enabled, next_run_at, null as last_run, 0 as rules_count, null as approval_rate from agents where id = $1`, [id]);
+    const a = await tx.query<Omit<Agent, "readiness">>(`select id, template, system, name, spec, model, schedule_cron, timezone, enabled, next_run_at, null as last_run, 0 as rules_count, null as approval_rate from agents where id = $1`, [id]);
     if (!a.rows[0]) throw notFound("Agent");
+    const [agent] = await withReadiness(tx, [a.rows[0]]);
     const rules = await tx.query<{ id: string; rule: string; source: string; created_at: string }>(
       `select id, rule, source, created_at from agent_rules where agent_id = $1 and active order by created_at desc`,
       [id],
@@ -53,7 +74,7 @@ export async function getAgent(ctx: Ctx, id: string) {
       `select id, status, trigger, summary, error, created_at, finished_at, cost_usd, model, input from runs where agent_id = $1 order by created_at desc limit 20`,
       [id],
     );
-    return { agent: a.rows[0], rules: rules.rows, runs: runs.rows };
+    return { agent: agent!, rules: rules.rows, runs: runs.rows };
   });
 }
 
@@ -149,6 +170,8 @@ export async function removeRule(ctx: Ctx, ruleId: string) {
 export async function runAgent(ctx: Ctx, agentId: string, input: Record<string, unknown> = {}, trigger: "manual" | "api" = "manual") {
   assertCan(ctx, "agents:run");
   return withTenant(ctx.tenantId, async (tx) => {
+    // Serialise run creation per workspace so concurrent requests can't both pass the checks below.
+    await tx.query(`select pg_advisory_xact_lock(hashtext('runs:' || $1))`, [ctx.tenantId]);
     const a = await tx.query<{ id: string }>(`select id from agents where id = $1`, [agentId]);
     if (!a.rows[0]) throw notFound("Agent");
     const active = await tx.query(`select 1 from runs where agent_id = $1 and status in ('queued','running') and created_at > now() - interval '30 minutes'`, [agentId]);

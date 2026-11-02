@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { LoaderCircle, Trash, Plus } from "lucide-react";
+import { Check, LoaderCircle, Trash, Plus } from "lucide-react";
 import { addRuleAction, removeRuleAction, updateAgentAction } from "@/app/(app)/actions";
 import { DAY_NAMES, fmtTime, parseCron, toCron, type SimpleSchedule } from "@/lib/schedule";
 import { AutoTextarea } from "./auto-textarea";
@@ -144,6 +144,16 @@ export function AgentEditor({
   const set = <K extends keyof typeof s>(k: K, v: (typeof s)[K]) => setS((x) => ({ ...x, [k]: v }));
   const lines = (t: string) => t.split("\n").map((l) => l.trim()).filter(Boolean);
   const dirty = JSON.stringify(s) !== JSON.stringify(base);
+  // After a save, the bar stays a moment to say so, then goes.
+  const [saved, setSaved] = useState(false);
+  useEffect(() => {
+    if (!saved) return;
+    const t = setTimeout(() => setSaved(false), 1800);
+    return () => clearTimeout(t);
+  }, [saved]);
+  useEffect(() => {
+    if (dirty) setSaved(false);
+  }, [dirty]);
 
   const save = () =>
     start(async () => {
@@ -155,7 +165,7 @@ export function AgentEditor({
         spec: { mission: s.mission, filters: lines(s.filters), output: s.output, goodLooksLike: lines(s.good), approval: s.approval, metric: s.metric, lookbackDays: Number(s.lookback) },
       });
       if (r.ok) {
-        toast.ok("Job spec saved");
+        setSaved(true);
         setBase(s);
         router.refresh();
       } else toast.error(r.error);
@@ -254,6 +264,14 @@ export function AgentEditor({
           </p>
         </div>
       </fieldset>
+      {canManage && saved && !dirty ? (
+        <div className="sticky bottom-[calc(69px+env(safe-area-inset-bottom))] z-20 mt-4 md:bottom-4">
+          <div className="animate-in flex h-12 items-center gap-2 rounded-xl bg-surface pl-4 pr-2 shadow-pop ring-1 ring-line" role="status">
+            <Check size={15} className="text-accent" aria-hidden />
+            <span className="flex-1 text-[14px] text-ink">Saved</span>
+          </div>
+        </div>
+      ) : null}
       {canManage && dirty ? (
         <div className="sticky bottom-[calc(69px+env(safe-area-inset-bottom))] z-20 mt-4 md:bottom-4">
           <div className="animate-in flex items-center gap-2 rounded-xl bg-surface py-2 pl-4 pr-2 shadow-pop ring-1 ring-line" role="region" aria-label="Unsaved changes">

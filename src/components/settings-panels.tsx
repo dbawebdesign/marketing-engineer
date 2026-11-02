@@ -138,12 +138,12 @@ export function EmbedPanel({ slug, appUrl }: { slug: string; appUrl: string }) {
   });
 </script>`;
   return (
-    <div className="space-y-4">
+    <div className="min-w-0 space-y-4">
       <p className="text-sm text-ink-2">
         Put the whole platform inside your product. Your server signs a short-lived token for the signed-in user; the iframe opens straight into their workspace. Roles come from the token and can never exceed admin.
       </p>
-      <div className="relative">
-        <pre className="overflow-x-auto rounded-xl bg-subtle p-4 font-mono text-[12.5px] leading-relaxed text-ink-2">{snippet}</pre>
+      <div className="relative min-w-0">
+        <pre className="max-w-full overflow-x-auto rounded-xl bg-subtle p-4 pt-12 font-mono text-[12.5px] leading-relaxed text-ink-2 sm:pt-4">{snippet}</pre>
         <Button size="sm" variant="secondary" className="absolute right-2 top-2" onClick={() => copy(snippet)}>
           <Copy size={13} /> Copy
         </Button>
@@ -152,7 +152,7 @@ export function EmbedPanel({ slug, appUrl }: { slug: string; appUrl: string }) {
         <span className="text-sm text-ink-2">Issuer</span>
         <code className="rounded bg-subtle px-2 py-1 font-mono text-[13px]">{slug}</code>
         <span className="ml-3 text-sm text-ink-2">Secret</span>
-        <code className="max-w-[260px] truncate rounded bg-subtle px-2 py-1 font-mono text-[13px]">{secret ?? "••••••••••••••••"}</code>
+        <code className="min-w-0 max-w-[260px] truncate rounded bg-subtle px-2 py-1 font-mono text-[13px]">{secret ?? "••••••••••••••••"}</code>
         {secret ? (
           <Button size="sm" variant="ghost" onClick={() => copy(secret)}>
             <Copy size={13} />

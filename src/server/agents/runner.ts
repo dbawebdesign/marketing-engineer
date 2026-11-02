@@ -5,6 +5,7 @@ import { getTemplate } from "./registry";
 import type { AgentTemplate, JobSpec, MetricsDigest, RunContext } from "./types";
 import type { SignalLite } from "./evidence";
 import { audit } from "../services/audit";
+import { readinessOf } from "./readiness";
 
 type AgentRow = { id: string; tenant_id: string; template: string; system: string; name: string; spec: JobSpec; model: string };
 
@@ -95,6 +96,20 @@ export async function executeRun(tenantId: string, runId: string): Promise<void>
   });
   if (!claimed) return;
   const { agent, tpl, rc } = claimed;
+
+  // Never draft from no input: finish quietly and say what's missing.
+  const ready = readinessOf(tpl, rc.signals.length, Object.values(rc.metrics?.totals ?? {}).reduce((a, b) => a + b, 0), rc.spec.lookbackDays);
+  if (!ready.ready) {
+    await withTenant(tenantId, async (tx) => {
+      const stats = { nothing: 1, signals: ready.signals, drafts: 0 };
+      await tx.query(
+        `update runs set status='succeeded', finished_at=now(), summary=$2, model='offline', input = input || jsonb_build_object('stats', $3::jsonb) where id=$1`,
+        [runId, ready.reason, JSON.stringify(stats)],
+      );
+      await audit(tx, { ...ctx, actor: { type: "agent", id: agent.id } }, "run.succeeded", { type: "run", id: runId }, stats);
+    });
+    return;
+  }
 
   try {
     let data: unknown;

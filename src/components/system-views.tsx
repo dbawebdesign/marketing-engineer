@@ -1,9 +1,12 @@
-import { ArrowRight, ChevronDown } from "lucide-react";
+import { ArrowRight, ChevronDown, Plus } from "lucide-react";
 import type { Draft } from "@/server/services/drafts";
 import type { Experiment } from "@/server/services/experiments";
 import { L } from "./nav";
 import { Markdown } from "./markdown";
 import { CopyButton } from "./copy-button";
+import { DraftPreview } from "./draft-preview";
+import { DemoButton } from "./demo-button";
+import { RunButton } from "./run-button";
 import { Badge, Dot, buttonClass, cx, plural, timeAgo } from "./ui";
 
 /* ------------------------------------------------------------------ shared */
@@ -72,24 +75,31 @@ export function ArtifactEmpty({ pending, noun, idle }: { pending: Draft[]; noun:
 
 export function DocView({ doc, title, pending, noun, idle }: { doc: { content: string; version: number; updated_at: string } | null; title: string; pending: Draft[]; noun: string; idle: { title: string; body: string } }) {
   const has = !!doc?.content.trim();
+  const p = pending[0];
   return (
-    <Block title={title} meta={has ? `v${doc!.version} · updated ${timeAgo(doc!.updated_at)}` : null}>
-      {has ? (
-        <>
-          <PendingNote drafts={pending} noun={[noun]} />
-          <div className={cx(card, "p-6 sm:p-8")}>
-            <Markdown>{doc!.content}</Markdown>
-          </div>
-        </>
-      ) : (
-        <ArtifactEmpty pending={pending} noun={noun} idle={idle} />
-      )}
-    </Block>
+    <>
+      {p ? (
+        <Block title={`New ${noun}`}>
+          <DraftPreview title={p.title} body={p.body} createdAt={p.created_at} href={inboxHref(p)} more={pending.length - 1} />
+        </Block>
+      ) : null}
+      {has || !p ? (
+        <Block title={title} meta={has ? `v${doc!.version} · updated ${timeAgo(doc!.updated_at)}` : null}>
+          {has ? (
+            <div className={cx(card, "p-6 sm:p-8")}>
+              <Markdown>{doc!.content}</Markdown>
+            </div>
+          ) : (
+            <ArtifactEmpty pending={[]} noun={noun} idle={idle} />
+          )}
+        </Block>
+      ) : null}
+    </>
   );
 }
 
 /** Recent drafts, identical titles collapsed, three rows at most. */
-export function DraftsList({ drafts }: { drafts: Draft[] }) {
+export function DraftsList({ drafts, hide = [] }: { drafts: Draft[]; /** Drafts the page already shows in full. */ hide?: string[] }) {
   const groups: { d: Draft; earlier: number }[] = [];
   const seen = new Map<string, number>();
   for (const d of drafts) {
@@ -100,7 +110,10 @@ export function DraftsList({ drafts }: { drafts: Draft[] }) {
       groups.push({ d, earlier: 0 });
     } else groups[i]!.earlier++;
   }
-  const rows = groups.slice(0, 3);
+  const hidden = new Set(hide);
+  const rows = groups.filter((g) => !hidden.has(g.d.id)).slice(0, 3);
+  // Nothing beyond what the page already shows: no second copy of it.
+  if (!rows.length && drafts.length) return null;
   return (
     <Block title="Recent drafts" meta={drafts.length ? <L href="/inbox" className="hover:text-ink">See all in Inbox</L> : null}>
       {rows.length ? (
@@ -133,22 +146,47 @@ export function DraftsList({ drafts }: { drafts: Draft[] }) {
 
 /* --------------------------------------------------------- founder content */
 
+const postText = (d: Draft) => {
+  const p = d.payload as { platform?: string; text?: string };
+  return { platform: p.platform === "x" ? "X" : "LinkedIn", text: p.text ?? d.body.split("\n---\n")[0] ?? "" };
+};
+
 export function PostsLibrary({ drafts }: { drafts: Draft[] }) {
   const posts = drafts.filter((d) => d.type === "post");
   const approved = posts.filter((d) => d.status === "approved" || d.status === "published");
   const pending = posts.filter((d) => d.status === "pending");
   return (
-    <Block title="Approved posts" meta={approved.length ? plural(approved.length, "post") : null}>
-      {approved.length ? (
-        <>
-          <PendingNote drafts={pending} noun={["post"]} />
+    <>
+      {pending.length ? (
+        <Block title="Waiting for your review" meta={<L href={inboxHref(pending[0]!)} className="hover:text-ink">{plural(pending.length, "post")} · Review in Inbox</L>}>
           <ul className="grid gap-4 sm:grid-cols-2">
-            {approved.map((d) => {
-              const p = d.payload as { platform?: string; text?: string };
-              const text = p.text ?? d.body.split("\n---\n")[0] ?? "";
+            {pending.map((d) => {
+              const { platform, text } = postText(d);
               return (
                 <li key={d.id} className={cx(card, "flex flex-col p-5")}>
-                  <p className="mb-2.5 text-[13px] text-ink-3">{p.platform === "x" ? "X" : "LinkedIn"}</p>
+                  <p className="mb-2.5 flex items-center gap-2 text-[13px] text-ink-3">
+                    <Dot tone="warn" /> {platform} · {timeAgo(d.created_at)}
+                  </p>
+                  <p className="line-clamp-[7] flex-1 whitespace-pre-line text-[14px] leading-relaxed text-ink">{text}</p>
+                  <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
+                    <L href={inboxHref(d)} className="flex items-center gap-1 text-[13px] font-medium text-ink-2 hover:text-ink">
+                      Review in Inbox <ArrowRight size={13} aria-hidden />
+                    </L>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </Block>
+      ) : null}
+      <Block title="Approved posts" meta={approved.length ? plural(approved.length, "post") : null}>
+        {approved.length ? (
+          <ul className="grid gap-4 sm:grid-cols-2">
+            {approved.map((d) => {
+              const { platform, text } = postText(d);
+              return (
+                <li key={d.id} className={cx(card, "flex flex-col p-5")}>
+                  <p className="mb-2.5 text-[13px] text-ink-3">{platform}</p>
                   <p className="line-clamp-[9] flex-1 whitespace-pre-line text-[14px] leading-relaxed text-ink">{text}</p>
                   <div className="mt-4 flex items-center justify-between gap-3 border-t border-line pt-3">
                     <L href={inboxHref(d)} className="text-[13px] text-ink-3 hover:text-ink">
@@ -160,15 +198,13 @@ export function PostsLibrary({ drafts }: { drafts: Draft[] }) {
               );
             })}
           </ul>
-        </>
-      ) : (
-        <ArtifactEmpty
-          pending={pending}
-          noun={pending.length > 1 ? "batch of posts" : "post"}
-          idle={{ title: "No approved posts yet", body: "Approve a post in your inbox and it lands here, ready to copy." }}
-        />
-      )}
-    </Block>
+        ) : pending.length ? (
+          <p className="text-[14px] text-ink-3">Approve a post and it lands here, ready to copy.</p>
+        ) : (
+          <ArtifactEmpty pending={[]} noun="post" idle={{ title: "No approved posts yet", body: "Approve a post in your inbox and it lands here, ready to copy." }} />
+        )}
+      </Block>
+    </>
   );
 }
 
@@ -185,7 +221,9 @@ function emailText(d: Draft) {
 }
 
 export function OutboundQueue({ drafts }: { drafts: Draft[] }) {
-  const rows = drafts.filter((d) => d.type === "outbound_message");
+  // One order everywhere: best fit first, then newest.
+  const fit = (d: Draft) => Number((d.payload as { fit_score?: number }).fit_score ?? -1);
+  const rows = drafts.filter((d) => d.type === "outbound_message").sort((a, b) => fit(b) - fit(a) || +new Date(b.created_at) - +new Date(a.created_at));
   const ready = rows.filter((d) => d.status === "approved").length;
   const toReview = rows.filter((d) => d.status === "pending").length;
   const cols = "md:grid md:grid-cols-[minmax(0,1.25fr)_minmax(0,0.8fr)_44px_minmax(0,1.6fr)_minmax(0,1fr)] md:items-center md:gap-5";
@@ -434,46 +472,100 @@ export function Coverage({ draft }: { draft: Draft | undefined }) {
 /* ---------------------------------------------------------- growth cockpit */
 
 export function AngleChart({ angles, days }: { angles: ({ angle: string } & Record<string, number>)[]; days: number }) {
-  const rows = angles.filter((a) => a.angle && a.angle !== "(none)").sort((a, b) => (b.demo_request ?? 0) - (a.demo_request ?? 0) || (b.click ?? 0) - (a.click ?? 0));
+  const rate = (a: Record<string, number>) => ((a.click ?? 0) ? ((a.demo_request ?? 0) / a.click!) * 100 : 0);
+  const rows = angles
+    .filter((a) => a.angle && a.angle !== "(none)")
+    .sort((a, b) => rate(b) - rate(a) || (b.demo_request ?? 0) - (a.demo_request ?? 0) || (b.click ?? 0) - (a.click ?? 0));
   if (!rows.length) return null;
-  const max = Math.max(1, ...rows.map((a) => a.click ?? 0));
+  // One shared scale: the best rate fills the track.
+  const max = Math.max(...rows.map(rate)) || 1;
   return (
-    <Block
-      title="Angles"
-      meta={
-        <span className="flex flex-wrap items-center gap-x-4 gap-y-1">
-          <span>Last {days} days</span>
-          <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm bg-line-strong" /> Clicks</span>
-          <span className="flex items-center gap-1.5"><span className="size-2 rounded-sm bg-accent" /> Demo requests</span>
-        </span>
-      }
-    >
+    <Block title="Angles" meta={`Demo requests per 100 clicks · last ${days} days`}>
       <ul className={cx(card, "divide-y divide-line")}>
         {rows.map((a) => {
           const clicks = a.click ?? 0;
           const demos = a.demo_request ?? 0;
           const replies = a.qualified_reply ?? 0;
+          const r = rate(a);
           return (
-            <li key={a.angle} className="grid gap-2.5 px-5 py-4 sm:grid-cols-[minmax(0,180px)_minmax(0,1fr)_auto] sm:items-center sm:gap-6">
+            <li key={a.angle} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-4 gap-y-2 px-5 py-3.5 sm:grid-cols-[minmax(0,200px)_minmax(0,1fr)_56px_minmax(0,210px)] sm:gap-x-5">
               <span className="truncate text-[14px] font-medium" title={a.angle}>{a.angle}</span>
-              <div className="space-y-1" aria-hidden>
-                <div className="h-1.5 rounded-full bg-line-strong" style={{ width: `${(clicks / max) * 100}%` }} />
-                <div className="h-1.5 rounded-full bg-accent" style={{ width: `${Math.max((demos / max) * 100, demos ? 1.5 : 0)}%` }} />
+              <span className="text-right text-[14px] font-medium text-ink tnum sm:order-3">
+                {clicks ? r.toFixed(1) : "—"}
+                <span className="sr-only"> demo requests per 100 clicks</span>
+              </span>
+              <div className="col-span-2 h-2 overflow-hidden rounded-full bg-line sm:order-2 sm:col-span-1" aria-hidden>
+                <div className="h-full rounded-full bg-accent" style={{ width: `${clicks ? Math.max((r / max) * 100, r ? 2 : 0) : 0}%` }} />
               </div>
-              <div className="flex items-baseline justify-between gap-4 text-[13px] text-ink-3 tnum sm:justify-end">
-                <span>
-                  {plural(clicks, "click")} · {plural(demos, "demo")} · {plural(replies, "reply", "replies")}
-                </span>
-                <span className="w-24 text-right">
-                  <span className="text-[14px] font-medium text-ink">{clicks ? `${((demos / clicks) * 100).toFixed(1)}%` : "—"}</span>
-                  <span className="sr-only"> click to demo</span>
-                </span>
-              </div>
+              <span className="col-span-2 text-[13px] text-ink-3 tnum sm:order-4 sm:col-span-1 sm:text-right">
+                {plural(clicks, "click")} · {plural(demos, "demo")} · {plural(replies, "reply", "replies")}
+              </span>
             </li>
           );
         })}
       </ul>
-      <p className="mt-2 text-right text-[13px] text-ink-3">Rate is demo requests per click.</p>
     </Block>
+  );
+}
+
+/* ---------------------------------------------------------------- first run */
+
+/**
+ * Before an agent has anything to read (or anything to show): one calm panel with the
+ * single next step, instead of an empty artifact under a Run button.
+ */
+export function FirstRun({
+  agentId,
+  agentName,
+  readiness,
+  noun,
+  promise,
+  canRun,
+  canLoadSamples,
+  activeRunId,
+}: {
+  agentId: string;
+  agentName: string;
+  readiness: { signals: number; need: number; days: number; ready: boolean; reads: "signals" | "metrics" } | null;
+  noun: string;
+  /** What the agent turns signals into, one sentence. */
+  promise: string;
+  canRun: boolean;
+  canLoadSamples: boolean;
+  activeRunId?: string | null;
+}) {
+  const ready = !readiness || readiness.ready;
+  const n = readiness?.signals ?? 0;
+  return (
+    <section className={cx(card, "mb-12 px-6 py-10 sm:px-10 sm:py-12")}>
+      <div className="max-w-lg">
+        <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-ink">
+          {ready ? `Ready to draft its first ${noun}` : n ? `Almost ready: ${plural(n, "signal")} so far` : `Give ${agentName} something to read`}
+        </h2>
+        <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
+          {promise}{" "}
+          {ready
+            ? `It has ${plural(n, "signal")} from the last ${readiness?.days ?? 7} days to work from. Run it, then approve what it drafts.`
+            : readiness!.reads === "metrics"
+              ? `It reads the last ${readiness!.days} days of metrics and signals, and there are none yet. Add signals here, or send metrics from your stack with an API key.`
+              : `It drafts from the last ${readiness!.days} days and needs at least ${readiness!.need} signals. Paste call notes, tickets, reviews or churn reasons.`}
+        </p>
+        {canRun ? (
+          <div className="mt-6 flex flex-wrap items-center gap-2">
+            {ready || activeRunId ? (
+              <RunButton agentId={agentId} size="md" label={`Run ${agentName}`} activeRunId={activeRunId} />
+            ) : (
+              <>
+                <L href="/signals?add=1" className={buttonClass("primary")}>
+                  <Plus size={14} aria-hidden /> Add signals
+                </L>
+                {canLoadSamples ? <DemoButton /> : null}
+                {n > 0 ? <RunButton agentId={agentId} size="md" label="Run anyway" variant="ghost" /> : null}
+              </>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </section>
   );
 }

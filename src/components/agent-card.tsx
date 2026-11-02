@@ -2,7 +2,7 @@ import { SlidersHorizontal } from "lucide-react";
 import type { Agent } from "@/server/services/agents";
 import { agentState, scheduleLabel } from "@/lib/schedule";
 import { L } from "./nav";
-import { RunButton } from "./run-button";
+import { AgentRun } from "./run-button";
 import { Dot, buttonClass, cx, timeAgo } from "./ui";
 
 /** One quiet line about the agent behind a system: state, schedule, last run. */
@@ -26,17 +26,24 @@ export function AgentMeta({ agent, className }: { agent: Agent; className?: stri
         <span aria-hidden className="text-ink-3">· </span>
         {st.pulse ? "Running now" : last ? `Last run ${timeAgo(last.created_at)}${last.status === "failed" ? ", failed" : ""}` : "Never run"}
       </span>
+      {agent.readiness && !agent.readiness.ready ? (
+        <span>
+          <span aria-hidden>· </span>
+          {agent.readiness.signals ? `${agent.readiness.signals} of ${agent.readiness.need} signals` : "No signals"} in the last {agent.readiness.days} days
+        </span>
+      ) : null}
     </p>
   );
 }
 
-export function AgentActions({ agent, canRun }: { agent: Agent; canRun: boolean }) {
+/** Job spec, plus the agent's next action (Run, or Add signals when its window is too thin). `run={false}` when the page body already offers it. */
+export function AgentActions({ agent, canRun, run = true, quiet = false }: { agent: Agent; canRun: boolean; run?: boolean; /** Something is waiting for review: that's the primary action, not Run. */ quiet?: boolean }) {
   return (
     <div className="flex items-center gap-1.5">
       <L href={`/agents/${agent.id}`} className={buttonClass("ghost", "sm")}>
         <SlidersHorizontal size={14} /> Job spec
       </L>
-      {canRun ? <RunButton agentId={agent.id} size="sm" /> : null}
+      {canRun && run ? <AgentRun agentId={agent.id} readiness={agent.readiness} quiet={quiet} /> : null}
     </div>
   );
 }

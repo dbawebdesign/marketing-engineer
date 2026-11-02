@@ -20,7 +20,8 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
   const docs = await listDocs(ctx);
   const byKey = new Map(docs.map((d) => [d.key, d]));
   const keys = [...GROWTH_OS.map((g) => g.key), ...docs.filter((d) => !GROWTH_OS.some((g) => g.key === d.key)).map((d) => d.key)];
-  const current = keys.includes(sp.doc ?? "") ? sp.doc! : keys[0]!;
+  // With no doc asked for, open on the first one that has something in it.
+  const current = keys.includes(sp.doc ?? "") ? sp.doc! : (keys.find((k) => byKey.get(k)?.content.trim()) ?? keys[0]!);
   const doc = byKey.get(current);
   const preset = GROWTH_OS.find((g) => g.key === current);
   const history = doc ? await docHistory(ctx, current) : [];

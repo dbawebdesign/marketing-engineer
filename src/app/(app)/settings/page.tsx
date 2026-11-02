@@ -4,6 +4,7 @@ import { listApiKeys } from "@/lib/apikeys";
 import { aiEnabled } from "@/lib/ai/provider";
 import { canDo } from "@/lib/ctx";
 import { ApiKeys, EmbedPanel, WorkspaceForm } from "@/components/settings-panels";
+import { CopyButton } from "@/components/copy-button";
 import { Badge, Dot, PageHeader, Section } from "@/components/ui";
 
 export const metadata = { title: "Settings" };
@@ -14,7 +15,7 @@ export default async function SettingsPage() {
   const [t, members, keys] = await Promise.all([tenantSettings(ctx), listMembers(ctx), admin ? listApiKeys(ctx) : []]);
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const ai = aiEnabled();
-  const row = "grid gap-4 border-t border-line py-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-10";
+  const row = "grid grid-cols-[minmax(0,1fr)] gap-4 border-t border-line py-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-10";
   const head = (title: string, sub: string) => (
     <div>
       <h2 className="font-semibold tracking-tight">{title}</h2>
@@ -39,11 +40,21 @@ export default async function SettingsPage() {
               <Dot tone={ai ? "accent" : "warn"} />
               {ai ? "Claude is connected" : "Agents are running in offline mode"}
             </p>
-            <p className="mt-1.5 max-w-xl text-ink-2">
-              {ai
-                ? "Customer truth, AI search and the Growth cockpit use Claude's deepest model for judgment. Drafting agents use a faster one."
-                : "Ask your administrator to connect Claude for full-quality output. Offline mode still checks every receipt."}
-            </p>
+            {ai ? (
+              <p className="mt-1.5 max-w-xl text-ink-2">
+                Customer truth, AI search and the Growth cockpit use Claude&rsquo;s deepest model for judgment. Drafting agents use a faster one.
+              </p>
+            ) : admin ? (
+              <>
+                <p className="mt-1.5 max-w-xl text-ink-2">
+                  Add <code className="rounded bg-subtle px-1.5 py-0.5 font-mono text-[13px] text-ink">ANTHROPIC_API_KEY</code> to the server environment to switch agents from the
+                  offline engine to Claude. Offline mode still checks every receipt.
+                </p>
+                <CopyButton text="ANTHROPIC_API_KEY" label="Copy variable name" className="mt-3" />
+              </>
+            ) : (
+              <p className="mt-1.5 max-w-xl text-ink-2">Ask an admin to connect Claude for full-quality output. Offline mode still checks every receipt.</p>
+            )}
           </div>
         </div>
         {members.length ? (
