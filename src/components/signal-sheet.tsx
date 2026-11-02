@@ -25,9 +25,15 @@ const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** A loose matcher for a quote: same words in order, any punctuation or spacing between them. */
 function quoteRegex(q: string) {
-  const words = q.toLowerCase().replace(/[‘’]/g, "'").match(/[a-z0-9$%']+/g);
+  // Quotes print inner double quotes as ‘…’; those marks are punctuation, not apostrophes, so they don't have to match.
+  const words = q
+    .toLowerCase()
+    .replace(/[‘’]/g, "'")
+    .match(/[a-z0-9$%']+/g)
+    ?.map((w) => w.replace(/^'+|'+$/g, ""))
+    .filter(Boolean);
   if (!words || words.length < 2) return null;
-  return new RegExp(words.map(esc).join("[^a-z0-9$%']+"), "i");
+  return new RegExp(words.map(esc).join("[^a-z0-9$%]+"), "i");
 }
 
 /** The signal's text with each cited quote marked. */

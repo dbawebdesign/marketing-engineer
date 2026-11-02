@@ -3,10 +3,28 @@ const STOP = new Set(
   "a an the and or but if then so to of in on for with at by from as is are was were be been being it its this that these those i we you they he she them our your their my me us do does did not no yes just very really can could would should will about into over after before than too also more most some any all each every what which who whom when where why how have has had get got there here out down off only own same such both few other again further once because while during until against between through above below said says asked told wants want wanted mentioned owner manager lead call calls month months".split(" "),
 );
 
+/** Rejoin pieces split inside an open double quote, so a quote is never cut across sentences. */
+function keepQuotesWhole(parts: string[]): string[] {
+  const out: string[] = [];
+  let open = false;
+  for (const p of parts) {
+    if (open && out.length) out[out.length - 1] += ` ${p}`;
+    else out.push(p);
+    const straight = (p.match(/"/g) ?? []).length;
+    const curly = (p.match(/“/g) ?? []).length - (p.match(/”/g) ?? []).length;
+    if (straight % 2 === 1) open = !open;
+    else if (curly > 0) open = true;
+    else if (curly < 0) open = false;
+  }
+  return out;
+}
+
 export function sentences(text: string): string[] {
-  return text
+  const parts = text
     .replace(/\s+/g, " ")
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9"'])/)
+    // A closing quote after the stop belongs to the sentence it ends: `I'll use it." Pricing…` splits after the quote.
+    .split(/(?<=[.!?]["”’')]?)\s+(?=[A-Z0-9"'“‘])/);
+  return keepQuotesWhole(parts)
     .map((s) => s.trim())
     .filter((s) => s.length >= 25 && s.length <= 320);
 }

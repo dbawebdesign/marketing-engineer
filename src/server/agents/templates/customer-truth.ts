@@ -2,7 +2,8 @@ import { z } from "zod";
 import type { AgentTemplate, RunContext } from "../types";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { dedupeEvidence, keepSupported, type VerifiedEvidence } from "../evidence";
-import { countBySource, listJoin, meta, onePerItem, shortDate } from "../format";
+import { countBySource, listJoin, meta, shortDate } from "../format";
+import { nestQuotes, stripOuterQuotes, tidyQuote } from "@/lib/quotes";
 import { bestSentence, clip, sentences, strongestSentences, tokens, topPhrases } from "../text";
 import { PULSE_MIN } from "../readiness";
 
@@ -99,6 +100,26 @@ export const OFFLINE_SINGLE = "Single signal, not a pattern yet";
 
 const OBJECTION = /\b(price|pricing|cost|expensive|steep|cheaper|budget|per-tech|hard to justify|not interested|not urgent|left for|competitor|confusing|buried|took longer|built for bigger|bundles)\b/i;
 
+/**
+ * Words that turn a price or setup mention into acceptance, not pushback:
+ * "Price fine if it saves 30 min a day" is a buyer saying yes on a condition.
+ */
+const ACCEPTING = /\b(fine|worth it|worth the|worth every|ok|okay|happy to pay|glad to pay|would pay|willing to pay|no problem|not a problem|not an issue|reasonable|fair price|affordable|cheap enough|if it saves|as long as it saves|pays for itself|no complaints?)\b/i;
+
+/** Whether a sentence that mentions price, setup or a competitor is pushing back rather than accepting it. */
+export function isObjection(sentence: string): boolean {
+  if (!OBJECTION.test(sentence)) return false;
+  if (/\b(did not|didn't|no|without) push(ing)? ?back\b|\bnot (a|an|the) (concern|issue|problem|blocker)\b|\bno (concerns?|objections?|complaints?)\b/i.test(sentence)) return false;
+  if (!ACCEPTING.test(sentence)) return true;
+  // "isn't worth it", "not fine at that price", "too expensive even if it saves time" are still pushback.
+  const accepting = sentence.match(ACCEPTING)![0];
+  const before = sentence.slice(0, sentence.toLowerCase().indexOf(accepting.toLowerCase()));
+  return /\b(not|isn't|wasn't|aren't|never|no longer)\s*(\w+\s+)?$/i.test(before) || /\b(too|steep|expensive|hard to justify|can't afford)\b/i.test(sentence);
+}
+
+/** Most quotes a single claim lists; each one is printed and counted. */
+const MAX_RECEIPTS = 6;
+
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
   const texts = sigs.map((s) => s.content);
@@ -125,15 +146,17 @@ function offline(rc: RunContext): Out {
       winning = surface(sharp.phrase, won.map((s) => s.content));
       const lostWords = lostP ? surface(lostP.phrase, lost.map((s) => s.content)) : null;
       const ws = won.filter((s) => wonP.phrase.split(" ").every((w) => tokens(s.content).includes(w)));
+      // The count is the quotes we can show: every deal counted is quoted under the claim.
+      const ev = ws.slice(0, MAX_RECEIPTS).flatMap((s) => quote(s, wonP.phrase));
       headline = lostWords
         ? `Deals we won talked about ${winning}. Deals we lost talked about ${lostWords}.`
         : `Deals we won kept coming back to ${winning}.`;
       changes.push({
-        claim: `${OFFLINE_THEME}: ${ws.length} of ${won.length} won deals brought up ${winning}; ${lost.length === 1 ? "the one lost deal didn't" : `none of the ${lost.length} lost deals did`}.`,
+        claim: `${OFFLINE_THEME}: ${ev.length} of ${won.length} won deals brought up ${winning}; ${lost.length === 1 ? "the one lost deal didn't" : `none of the ${lost.length} lost deals did`}.`,
         why_it_matters: lostWords ? `The lost deals talked about ${lostWords} instead.` : "Check the quotes: it may be what closes.",
-        strength: ws.length >= 3 ? "strong" : "emerging",
-        count: ws.length,
-        evidence: ws.slice(0, 3).flatMap((s) => quote(s, wonP.phrase)),
+        strength: ev.length >= 3 ? "strong" : "emerging",
+        count: ev.length,
+        evidence: ev,
       });
     }
   }
@@ -146,16 +169,19 @@ function offline(rc: RunContext): Out {
     const words = surface(p.phrase, texts);
     if (winning && (winning.includes(words) || words.includes(winning))) continue;
     if (p.phrase.split(" ").every((w) => seen.has(w))) continue;
-    const hits = hitsFor(p.phrase);
+    // Only signals we can quote are counted, so the number in the claim equals the quotes under it.
+    const hits = hitsFor(p.phrase).filter((s) => quote(s, p.phrase).length).slice(0, MAX_RECEIPTS);
     // One company repeating itself across five calls is one voice, not a market signal.
     if (hits.length < 2 || voices(hits) < 2) continue;
     const sources = [...new Set(hits.map((h) => h.source))];
+    const where = `${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}`;
+    if (!changes.length) headline = `Customers keep using the phrase ‘${words}’: it came up in ${where} (offline phrase match, unverified).`;
     changes.push({
-      claim: `${OFFLINE_THEME}: “${words}” came up in ${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}.`,
+      claim: `${OFFLINE_THEME}: “${words}” came up in ${where}.`,
       why_it_matters: whyFor(sources),
       strength: hits.length >= 4 ? "strong" : "emerging",
       count: hits.length,
-      evidence: hits.slice(0, 2).flatMap((s) => quote(s, p.phrase)),
+      evidence: hits.flatMap((s) => quote(s, p.phrase)),
     });
   }
 
@@ -165,11 +191,11 @@ function offline(rc: RunContext): Out {
   if (!changes.length && voices(sigs) >= 2) {
     // Price and competitor pushback is listed under Objections; keep this list for the other pains.
     const ranked = strongestSentences(sigs, 8);
-    const pains = ranked.filter((x) => !OBJECTION.test(x.sentence));
+    const pains = ranked.filter((x) => !isObjection(x.sentence));
     const strongest = (pains.length ? pains : ranked).slice(0, 3);
     if (strongest.length) {
       noTheme = true;
-      headline = `No theme repeats across these ${sigs.length} signals yet. Strongest single signal: “${clip(strongest[0]!.sentence, 160)}”`;
+      headline = `No theme repeats across these ${sigs.length} signals yet. Strongest single signal: ‘${nestQuotes(tidyQuote(clip(strongest[0]!.sentence, 160)))}’.`;
       for (const x of strongest) {
         changes.push({
           claim: `${OFFLINE_SINGLE}: ${SOURCE_WORD[x.item.source]?.replace(/s$/, "") ?? "note"}${x.item.account ? ` from ${x.item.account}` : ""}`,
@@ -186,8 +212,9 @@ function offline(rc: RunContext): Out {
   const objectionSources = sigs.filter((s) => s.outcome === "lost" || s.source === "churn_note" || s.source === "review" || s.source === "support_ticket" || (s.source === "sales_call" && s.outcome !== "won"));
   const objections: Out["objections"] = [];
   for (const s of objectionSources) {
-    const sentence = sentences(s.content).find((x) => OBJECTION.test(x));
-    if (!sentence || objections.length >= 4) continue;
+    // Direction matters: "price fine if it saves 30 min" mentions price but is not pushback.
+    const sentence = sentences(s.content).find(isObjection);
+    if (!sentence) continue;
     const kind = sentence.match(OBJECTION)![0].toLowerCase();
     // Labels name the kind of pushback only; the quote under each says the specifics.
     const label = /price|pricing|cost|expensive|steep|cheaper|budget|per-tech|justify/.test(kind)
@@ -199,18 +226,19 @@ function offline(rc: RunContext): Out {
           : /built for bigger/.test(kind)
             ? "Feels built for bigger companies"
             : "Not urgent enough to switch now";
+    // Every signal counted is quoted: count always equals the receipts listed.
     const existing = objections.find((o) => o.objection === label);
     if (existing) {
-      existing.count++;
-      if (existing.evidence.length < 2) existing.evidence.push({ signal_id: s.id, quote: sentence });
-    } else objections.push({ objection: label, count: 1, evidence: [{ signal_id: s.id, quote: sentence }] });
+      if (existing.evidence.length < MAX_RECEIPTS) existing.evidence.push({ signal_id: s.id, quote: sentence });
+      existing.count = existing.evidence.length;
+    } else if (objections.length < 4) objections.push({ objection: label, count: 1, evidence: [{ signal_id: s.id, quote: sentence }] });
   }
 
   // The test leads with what closed, or with the phrase behind the top change; never with a phrase that didn't make the memo.
   const topChange = changes[0] && !noTheme ? /“([^”]+)”/.exec(changes[0].claim)?.[1] ?? null : null;
   const angle = winning ?? topChange;
   return {
-    headline: headline ?? (changes[0] ? `${changes[0].claim.slice(OFFLINE_THEME.length + 2).replace(/\.$/, "")} (offline phrase match, unverified).` : ""),
+    headline: headline ?? (changes[0] ? nestQuotes(`${changes[0].claim.slice(OFFLINE_THEME.length + 2).replace(/\.$/, "")} (offline phrase match, unverified).`) : ""),
     changes,
     language: phrases.slice(0, 5).map((p) => {
       const words = surface(p.phrase, texts);
@@ -235,24 +263,27 @@ function offline(rc: RunContext): Out {
 type V<T> = Omit<T, "evidence"> & { evidence: VerifiedEvidence[] };
 type Kept = Omit<Out, "changes" | "objections"> & { changes: V<Out["changes"][number]>[]; objections: V<Out["objections"][number]>[] };
 
-const receipt = (e: VerifiedEvidence | null) => (e ? `\n  > "${e.quote}" (${[e.source ? (SOURCE_WORD[e.source] ?? e.source).replace(/s$/, "") : null, e.account].filter(Boolean).join(", ")})` : "");
+const receiptLine = (e: VerifiedEvidence) => `"${tidyQuote(e.quote)}" (${[e.source ? (SOURCE_WORD[e.source] ?? e.source).replace(/s$/, "") : null, e.account].filter(Boolean).join(", ")})`;
 
-/** The memo body: dense, one receipt per bullet (the full list stays on the draft's evidence). */
+/**
+ * Every receipt behind a bullet, each its own quote on its own line, so the count a bullet
+ * states (and the chip the UI adds) matches the quotes a reader can open.
+ */
+const receipts = (ev: VerifiedEvidence[]) => (ev.length ? `\n${ev.map(receiptLine).map((l) => `  > ${l}`).join("\n  >\n")}` : "");
+
+/** The memo body: each bullet with all of its receipts. */
 function md(o: Kept) {
-  const used = new Set<string>();
   const changes = o.changes.slice(0, 4);
   const objections = o.objections.slice(0, 3);
-  const cq = onePerItem(changes, used);
-  const oq = onePerItem(objections, used);
   // Phrases already named in a claim are not news twice.
   const claims = changes.map((c) => c.claim.toLowerCase()).join(" ");
   const words = o.language.filter((l) => !claims.includes(l.phrase.toLowerCase())).slice(0, 5);
   const t = o.recommended_test;
   return [
     o.headline.trim() ? `**${o.headline}**` : null,
-    changes.length ? `## What changed\n${changes.map((c, i) => `- **${c.claim.replace(/\.$/, "")}.** ${c.why_it_matters}${receipt(cq[i]!)}`).join("\n")}` : null,
+    changes.length ? `## What changed\n${changes.map((c) => `- **${c.claim.replace(/\.$/, "")}.** ${c.why_it_matters}${receipts(c.evidence)}`).join("\n")}` : null,
     words.length ? `## Their words\n${words.map((l) => `"${l.phrase}" (${l.note.replace(/ mentions?$/, "")})`).join(" · ")}` : null,
-    objections.length ? `## Objections\n${objections.map((x, i) => `- **${x.objection}** (${x.count})${receipt(oq[i]!)}`).join("\n")}` : null,
+    objections.length ? `## Objections\n${objections.map((x) => `- **${x.objection}** (${x.evidence.length})${receipts(x.evidence)}`).join("\n")}` : null,
     isRealTest(t) ? `## Test this week\n**${t.name}.** ${t.hypothesis} Run it on ${t.channel.replace("_", " ")}; decided by ${t.metric.toLowerCase()}.` : null,
   ]
     .filter(Boolean)
@@ -303,13 +334,19 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
     const changes = keepSupported(o.changes, rc.signalMap);
     const objections = keepSupported(o.objections, rc.signalMap);
     const language = keepSupported(o.language, rc.signalMap);
+    // Quotes are verified verbatim first, then tidied for print (inner double quotes become ‘…’),
+    // so the draft's receipts and the quotes in its body are the same strings.
+    const tidy = <T extends { evidence: VerifiedEvidence[] }>(xs: T[]) => xs.map((x) => ({ ...x, evidence: x.evidence.map((e) => ({ ...e, quote: tidyQuote(e.quote) })) }));
+    changes.kept = tidy(changes.kept);
+    objections.kept = tidy(objections.kept).map((x) => ({ ...x, count: x.evidence.length }));
     const cleaned = { ...o, changes: changes.kept, objections: objections.kept, language: language.kept } as Kept;
     const dropped = changes.dropped + objections.dropped;
     const evidence = dedupeEvidence([...changes.kept, ...objections.kept].flatMap((c) => c.evidence));
     const date = shortDate(rc.now);
     // A memo is worth reviewing only when at least one change survived verification.
     const substantive = changes.kept.length > 0;
-    const headline = substantive && o.headline.trim() ? o.headline : (changes.kept[0]?.claim ?? "");
+    // Screens wrap the headline in “…”: never let it start or end with its own quote marks.
+    const headline = nestQuotes(stripOuterQuotes(substantive && o.headline.trim() ? o.headline : (changes.kept[0]?.claim ?? "")));
     const test = isRealTest(o.recommended_test) ? o.recommended_test : null;
     return {
       substantive,
