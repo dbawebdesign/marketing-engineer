@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { sys, sysTx, withTenant } from "@/lib/db";
-import { assertCan, systemCtx, type Ctx } from "@/lib/ctx";
+import { assertCan, canDo, systemCtx, type Ctx } from "@/lib/ctx";
+import { audit } from "./audit";
 import { badRequest } from "@/lib/errors";
 import { encrypt, decrypt, token } from "@/lib/crypto";
 import { hashPassword, verifyPassword } from "@/lib/password";
@@ -84,6 +85,7 @@ export async function userTenants(userId: string) {
 export async function getEmbedSecret(ctx: Ctx) {
   assertCan(ctx, "settings:manage");
   const r = await sys<{ embed_secret_enc: string | null }>(`select embed_secret_enc from tenants where id = $1`, [ctx.tenantId]);
+  await withTenant(ctx.tenantId, (tx) => audit(tx, ctx, "embed_secret.reveal"));
   return r.rows[0]?.embed_secret_enc ? decrypt(r.rows[0].embed_secret_enc) : null;
 }
 
@@ -91,6 +93,9 @@ export async function rotateEmbedSecret(ctx: Ctx) {
   assertCan(ctx, "settings:manage");
   const secret = token(32);
   await sys(`update tenants set embed_secret_enc = $2 where id = $1`, [ctx.tenantId, encrypt(secret)]);
+  // Rotating the secret ends every embed session minted with the old one.
+  await sys(`delete from sessions where tenant_id = $1 and kind = 'embed'`, [ctx.tenantId]);
+  await withTenant(ctx.tenantId, (tx) => audit(tx, ctx, "embed_secret.rotate"));
   return secret;
 }
 
@@ -115,10 +120,12 @@ export async function updateTenant(ctx: Ctx, raw: unknown) {
     })
     .parse(raw);
   await sys(`update tenants set name = coalesce($2, name), allowed_origins = coalesce($3, allowed_origins) where id = $1`, [ctx.tenantId, u.name ?? null, u.allowed_origins ?? null]);
+  await withTenant(ctx.tenantId, (tx) => audit(tx, ctx, "workspace.update", { type: "tenant", id: ctx.tenantId }, { name: u.name, allowed_origins: u.allowed_origins }));
 }
 
+/** Members with emails: admins only, never inside an embed. Others get an empty list. */
 export async function listMembers(ctx: Ctx) {
-  assertCan(ctx, "read");
+  if (!canDo(ctx, "members:manage")) return [];
   const r = await sys<{ id: string; name: string; email: string; role: string; external: boolean; created_at: string }>(
     `select u.id, u.name, u.email, m.role, (u.external_ref is not null) external, m.created_at
        from memberships m join users u on u.id = m.user_id where m.tenant_id = $1 order by m.created_at`,

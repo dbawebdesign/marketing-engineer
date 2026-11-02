@@ -4,15 +4,19 @@ import remarkGfm from "remark-gfm";
 /**
  * Renders agent output and memory docs. Raw HTML is never rendered (react-markdown
  * escapes it by default), and links are forced to safe protocols, because agent
- * output is derived from untrusted customer signals.
+ * output is derived from untrusted customer signals. Images are never fetched.
  */
 export function Markdown({ children, className }: { children: string; className?: string }) {
   return (
     <div className={`prose-me ${className ?? ""}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => (/^(https?:|mailto:|#|\/)/i.test(url) ? url : "")}
-        components={{ a: ({ node: _n, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer nofollow" /> }}
+        urlTransform={(url) => (/^(https?:|mailto:|#|\/(?!\/))/i.test(url) ? url : "")}
+        components={{
+          a: ({ node: _n, ...p }) => <a {...p} target="_blank" rel="noopener noreferrer nofollow" />,
+          // Never load remote images from agent output: an injected image URL would leak data on view.
+          img: ({ alt }) => (alt ? <span className="text-ink-3">[image: {alt}]</span> : null),
+        }}
       >
         {children}
       </ReactMarkdown>

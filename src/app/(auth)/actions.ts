@@ -6,19 +6,19 @@ import { login, signup } from "@/server/services/tenants";
 import { limit } from "@/server/web/ratelimit";
 import { AppError } from "@/lib/errors";
 import { ZodError } from "zod";
+import { trustedIp } from "@/lib/client-ip";
 
 export type AuthState = { error?: string; fields?: Record<string, string> };
 
 async function ipKey(prefix: string) {
-  const h = await headers();
-  return `${prefix}:${(h.get("x-forwarded-for") ?? "local").split(",")[0]?.trim()}`;
+  return `${prefix}:${trustedIp(await headers())}`;
 }
 
 export async function loginAction(_: AuthState, form: FormData): Promise<AuthState> {
   const email = String(form.get("email") ?? "");
   const password = String(form.get("password") ?? "");
   const fields = { email };
-  if (!limit(await ipKey("login"), 10, 60) || !limit(`login:${email.toLowerCase()}`, 10, 300))
+  if (!limit(await ipKey("login"), 10, 60) || !limit(`login:${email.trim().toLowerCase().slice(0, 254)}`, 10, 300))
     return { error: "Too many attempts. Wait a minute and try again.", fields };
   const r = await login(email, password);
   if (!r) return { error: "That email and password don't match.", fields };

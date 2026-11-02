@@ -19,6 +19,7 @@ import { AppError, unauthorized } from "./errors";
 import { authenticateApiKey } from "./apikeys";
 import { getSession, ctxFromSession } from "./auth";
 import { limit, type LimitOpts } from "./rate-limit";
+import { trustedIp } from "./client-ip";
 
 export type RouteArgs<P> = { params: P; requestId: string; ip: string };
 type RouteContext<P> = { params: Promise<P> };
@@ -78,9 +79,7 @@ export function toErrorResponse(e: unknown, requestId: string): NextResponse {
 // ---------- request helpers ----------
 
 export function clientIp(req: NextRequest): string {
-  // Only meaningful behind a proxy that sets these; used for rate limiting, never for auth.
-  const xff = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return (xff || req.headers.get("x-real-ip") || "unknown").slice(0, 64);
+  return trustedIp(req.headers);
 }
 
 function requestIdFor(req: NextRequest): string {

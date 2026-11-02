@@ -1,4 +1,4 @@
-import { publicHandler, readText } from "@/lib/api";
+import { clientIp, publicHandler, readText } from "@/lib/api";
 import { sys } from "@/lib/db";
 import { decrypt } from "@/lib/crypto";
 import { AppError, badRequest } from "@/lib/errors";
@@ -41,20 +41,25 @@ function normalize(item: Obj, defaultSource: string): SignalInputT {
 export const POST = publicHandler<{ tenantSlug: string }>(async (req, { params }) => {
   const slug = params.tenantSlug;
   if (!/^[a-z0-9][a-z0-9-]{1,47}$/.test(slug)) throw invalid();
-  const rl = await limit(`wh:${slug}`, { capacity: 120, refillPerSec: 2 });
-  if (!rl.ok) throw new AppError(429, "rate_limited", "Too many requests, slow down", { retry_after: rl.retryAfter });
+  // Cheap rejects before reading any body: unsigned requests never touch the tenant's budget.
+  const signature = req.headers.get("x-me-signature");
+  const timestamp = req.headers.get("x-me-timestamp");
+  if (!signature || !/^sha256=[0-9a-f]{64}$/i.test(signature) || !timestamp || !/^\d{9,11}$/.test(timestamp)) throw invalid();
+  // Unauthenticated traffic is charged per client IP, so nobody can exhaust a tenant's bucket.
+  const pre = await limit(`wh-ip:${clientIp(req)}`, { capacity: 60, refillPerSec: 1 });
+  if (!pre.ok) throw new AppError(429, "rate_limited", "Too many requests, slow down", { retry_after: pre.retryAfter });
 
   // Read the exact bytes that were signed before parsing anything.
-  const raw = await readText(req, 20_000_000);
+  const raw = await readText(req, 5_000_000);
   const t = await sys<{ id: string; embed_secret_enc: string | null }>(`select id, embed_secret_enc from tenants where slug = $1`, [slug]);
   const tenant = t.rows[0];
   // Unknown tenant and bad signature look identical to the caller (no slug enumeration).
   if (!tenant?.embed_secret_enc) throw invalid();
-  const check = verifySignature(decrypt(tenant.embed_secret_enc), raw, {
-    signature: req.headers.get("x-me-signature"),
-    timestamp: req.headers.get("x-me-timestamp"),
-  });
+  const check = verifySignature(decrypt(tenant.embed_secret_enc), raw, { signature, timestamp });
   if (!check.ok) throw invalid();
+  // Only authenticated deliveries spend the tenant's ingest budget.
+  const rl = await limit(`wh:${slug}`, { capacity: 120, refillPerSec: 2 });
+  if (!rl.ok) throw new AppError(429, "rate_limited", "Too many requests, slow down", { retry_after: rl.retryAfter });
 
   let body: unknown;
   try {

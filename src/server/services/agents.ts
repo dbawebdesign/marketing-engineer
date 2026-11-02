@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { withTenant, type Tx } from "@/lib/db";
 import { assertCan, type Ctx } from "@/lib/ctx";
-import { badRequest, notFound } from "@/lib/errors";
+import { AppError, badRequest, notFound } from "@/lib/errors";
 import { MODELS } from "@/lib/ai/provider";
 import { getTemplate, TEMPLATES } from "../agents/registry";
 import type { JobSpec, System } from "../agents/types";
-import { enqueue, nextRun } from "../jobs";
+import { DAILY_RUN_LIMIT, enqueue, nextRun, scheduleProblem } from "../jobs";
 import { audit } from "./audit";
 
 export type Agent = {
@@ -104,7 +104,8 @@ export const AgentUpdate = z.object({
 export async function updateAgent(ctx: Ctx, id: string, raw: unknown) {
   assertCan(ctx, "agents:manage");
   const u = AgentUpdate.parse(raw);
-  if (u.schedule_cron && !nextRun(u.schedule_cron)) throw badRequest("That schedule isn't a valid cron expression");
+  const problem = u.schedule_cron ? scheduleProblem(u.schedule_cron) : null;
+  if (problem) throw badRequest(problem);
   return withTenant(ctx.tenantId, async (tx) => {
     const cur = await tx.query<{ spec: JobSpec; schedule_cron: string | null; timezone: string }>(`select spec, schedule_cron, timezone from agents where id = $1 for update`, [id]);
     if (!cur.rows[0]) throw notFound("Agent");
@@ -120,7 +121,8 @@ export async function updateAgent(ctx: Ctx, id: string, raw: unknown) {
 }
 
 export async function addRule(ctx: Ctx, agentId: string, rule: string, source: "manual" | "correction" = "manual") {
-  assertCan(ctx, "agents:run");
+  // Standing rules reprogram the agent, so they need the same permission as removing them.
+  assertCan(ctx, "agents:manage");
   const text = rule.trim();
   if (text.length < 3 || text.length > 2000) throw badRequest("A rule should be between 3 and 2,000 characters");
   return withTenant(ctx.tenantId, async (tx) => addRuleTx(tx, ctx, agentId, text, source));
@@ -151,6 +153,8 @@ export async function runAgent(ctx: Ctx, agentId: string, input: Record<string, 
     if (!a.rows[0]) throw notFound("Agent");
     const active = await tx.query(`select 1 from runs where agent_id = $1 and status in ('queued','running') and created_at > now() - interval '30 minutes'`, [agentId]);
     if (active.rowCount) throw badRequest("This agent is already working. Give it a moment.");
+    const today = await tx.query<{ n: number }>(`select count(*)::int n from runs where created_at > now() - interval '24 hours'`);
+    if ((today.rows[0]?.n ?? 0) >= DAILY_RUN_LIMIT) throw new AppError(429, "run_limit", `This workspace has used its ${DAILY_RUN_LIMIT} agent runs for the day. Try again tomorrow.`);
     const r = await tx.query<{ id: string }>(
       `insert into runs(tenant_id, agent_id, trigger, requested_by, input) values ($1,$2,$3,$4,$5) returning id`,
       [ctx.tenantId, agentId, trigger, ctx.userId, input],

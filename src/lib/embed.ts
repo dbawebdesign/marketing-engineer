@@ -156,21 +156,22 @@ export async function verifyEmbedJwt(token: string, secret: string, opts: { issu
  * When the tenant has allowed origins:
  *  - the token must carry an `origin` claim that is in the list (the host's backend signs it,
  *    so a leaked token can't be re-pointed at another site),
- *  - if the browser sent Sec-Fetch-Dest, it must be "iframe" (a token opened as a top-level
- *    page is refused),
  *  - if the browser sent a Referer, its origin must equal the claimed origin. Referer may be
  *    absent (Referrer-Policy: no-referrer), so it is a consistency check, not the gate.
- * With no allowed origins configured (local development), any origin is accepted.
+ * In every case, if the browser sent Sec-Fetch-Dest it must be "iframe": a token opened as a
+ * top-level page is refused. With no allowed origins configured (local development), any
+ * framing origin is accepted.
  */
 export function checkEmbedOrigin(
   allowedOrigins: readonly string[],
   claims: Pick<EmbedClaims, "origin">,
   headers: { referer?: string | null; secFetchDest?: string | null },
 ): void {
+  // Always: a browser that says this is a top-level navigation is refused (login-CSRF / session swap).
+  if (headers.secFetchDest && headers.secFetchDest !== "iframe") throw new EmbedTokenError("must_be_framed");
   if (!allowedOrigins.length) return;
   const allowed = allowedOrigins.map((o) => o.toLowerCase().replace(/\/+$/, ""));
   if (!claims.origin || !allowed.includes(claims.origin)) throw new EmbedTokenError("origin_not_allowed");
-  if (headers.secFetchDest && headers.secFetchDest !== "iframe") throw new EmbedTokenError("must_be_framed");
   if (headers.referer) {
     let refOrigin: string;
     try {
@@ -257,6 +258,6 @@ export async function verifyEmbedToken(
       `insert into audit_log(tenant_id, actor_type, actor_id, action, target_type, target_id, metadata) values ($1,'embed',$2,'embed.session.start','user',$2,$3)`,
       [tenant.id, userId, { role: claims.role, origin: claims.origin, jti: claims.jti }],
     ),
-  ).catch(() => {});
+  ).catch((e) => console.error("[embed] audit write failed", e));
   return { tenantId: tenant.id, slug: tenant.slug, userId, role: claims.role, allowedOrigins: tenant.allowed_origins };
 }
