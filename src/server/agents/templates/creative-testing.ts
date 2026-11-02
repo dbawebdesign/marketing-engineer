@@ -5,6 +5,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { keepSupported } from "../evidence";
 import { bullets, findBanned, findSentence, parseBanned, renderBanned, techsOf } from "./guardrails";
 import { countBySource, draftTitle, fromSignals, meta } from "../format";
+import { mentionsPhrase, phraseWords, quoteLine, sentences, stripLabel } from "../text";
 
 const READS = ["creative/offers", "customer-truth/what-the-market-is-telling-us", "outbound/approved-angles", "content/winning-hooks", "content/founder-voice", "outbound/banned-language"];
 const CHANNELS = ["paid_social", "linkedin", "x", "search", "landing_page", "email", "outbound", "other"] as const;
@@ -59,6 +60,59 @@ function find(sigs: SignalLite[], re: RegExp) {
   return null;
 }
 
+/**
+ * Sample (demo) signals carry `is_sample`. The worded hooks, insights and ads below describe the sample
+ * business (follow-up quotes from the truck), so they are only written for sample signals; a real
+ * tenant gets hooks quoted verbatim from its own signals and nothing else.
+ */
+const isSample = (s: SignalLite) => Boolean((s as SignalLite & { is_sample?: boolean }).is_sample);
+
+/** The test phrase a run was started for ("Run Hook lab on this" on an experiment), if any. */
+export function testPhraseOf(rc: Pick<RunContext, "input">): string | null {
+  const i = rc.input ?? {};
+  if (typeof i.experiment_id !== "string" || !i.experiment_id) return null;
+  const name = typeof i.experiment === "string" ? i.experiment.trim() : "";
+  const offer = typeof i.offer === "string" ? i.offer.split(/[:.]/)[0]!.trim() : "";
+  const phrase = name || offer;
+  return phrase && phraseWords(phrase).length ? phrase : null;
+}
+
+/** "Lead with drive-time report" → "drive-time report". */
+const phraseCore = (p: string) => p.replace(/^\s*(lead|open|start|go|test|try)\s+(with|on)\s+/i, "").replace(/^\s*(test|try)\s+/i, "").trim();
+
+/** Verbatim sentences (or a whole short line) from a signal, labels stripped. */
+function quotable(s: SignalLite): string[] {
+  const ss = sentences(s.content);
+  const t = s.content.replace(/\s+/g, " ").trim();
+  return (ss.length ? ss : t.length >= 12 && t.length <= 320 ? [t] : []).map(stripLabel).filter((q) => q.length >= 12);
+}
+
+const SOURCE_NAME: Record<string, string> = { sales_call: "sales calls", support_ticket: "support tickets", churn_note: "churn notes", review: "reviews", crm_note: "CRM notes", interview: "interviews", social: "social posts", email: "emails" };
+
+/** Hooks for a test phrase: only verbatim quotes that use it, one angle per source. Empty when no quote does. */
+function phraseBatch(rc: RunContext, phrase: string): Out["angles"] {
+  const words = phraseWords(phrase);
+  const core = phraseCore(phrase);
+  const bySource = new Map<string, { s: SignalLite; q: string }[]>();
+  for (const s of rc.signals) {
+    for (const q of quotable(s)) {
+      if (!mentionsPhrase(q, words)) continue;
+      if (!bySource.has(s.source)) bySource.set(s.source, []);
+      const list = bySource.get(s.source)!;
+      if (!list.some((x) => x.q === q)) list.push({ s, q });
+    }
+  }
+  return [...bySource.entries()].slice(0, 5).map(([src, xs]) => {
+    const picked = xs.slice(0, 4);
+    return {
+      name: `"${core}" in ${SOURCE_NAME[src] ?? src.replace(/_/g, " ")}`,
+      insight: `Quoted verbatim from ${countBySource(picked.map((x) => x.s).filter((s, i, a) => a.indexOf(s) === i))}.`,
+      hooks: picked.map((x) => quoteLine(x.q)),
+      evidence: picked.map((x) => ({ signal_id: x.s.id, quote: x.q })),
+    };
+  });
+}
+
 /** The buyer lines each angle is built on. A signal matching none of them gives the offline writer nothing to test. */
 const ANGLE_LINES = {
   money: /\$\s?\d[\d,]{2,}/,
@@ -76,9 +130,33 @@ export function angleable(s: SignalLite) {
   );
 }
 
+/** A real tenant's angle: its hooks are the verbatim buyer lines, nothing written around them. */
+function verbatimAngle(name: string, xs: { s: SignalLite; q: string }[]): Out["angles"][number] {
+  const qs = xs.map((x) => ({ ...x, q: stripLabel(x.q) }));
+  return {
+    name,
+    insight: `Quoted verbatim from ${countBySource(qs.map((x) => x.s).filter((s, i, a) => a.indexOf(s) === i))}.`,
+    hooks: qs.map((x) => quoteLine(x.q)),
+    evidence: qs.map((x) => ({ signal_id: x.s.id, quote: x.q })),
+  };
+}
+
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
   const offer = parseOffer(rc);
+  const phrase = testPhraseOf(rc);
+  if (phrase) {
+    const angles = phraseBatch(rc, phrase);
+    return {
+      offer: offer.detail ? `${offer.name}: ${offer.detail}` : offer.name,
+      hypothesis: angles.length ? `Hooks that say "${phraseCore(phrase)}" in the buyer's own words, tested against each other on demo requests per click.` : "",
+      channel: "paid_social",
+      metric: "demo_request",
+      angles,
+      ads: [],
+      notes: "Every hook is a verbatim quote that uses the test phrase. Run 2-3 per angle first.",
+    };
+  }
   const isCalc = /calculator/i.test(offer.name);
   const isPilot = /pilot|trial/i.test(offer.name);
   const cta = isCalc ? "Get your number." : isPilot ? "Start the pilot." : "See how it works.";
@@ -89,7 +167,9 @@ function offline(rc: RunContext): Out {
 
   // 1. A specific loss.
   const money = sigs.map((s) => ({ s, q: moneyLine(s) })).find((x): x is { s: SignalLite; q: string } => Boolean(x.q)) ?? null;
-  if (money) {
+  if (money && !isSample(money.s)) {
+    angles.push(verbatimAngle("A cost they named", [money]));
+  } else if (money) {
     const amount = /\$\s?\d[\d,]+/.exec(money.q)![0];
     const what = /\b(chiller|rooftop unit|boiler|compressor|furnace|unit)\b/i.exec(money.q)?.[1]?.toLowerCase() ?? "equipment";
     const competitor = /competitor/i.test(money.s.content);
@@ -112,13 +192,15 @@ function offline(rc: RunContext): Out {
 
   // 2. The leak they can't count.
   const blind = find(sigs, ANGLE_LINES.blind);
-  if (blind) {
+  if (blind && !isSample(blind.s)) {
+    angles.push(verbatimAngle("What they can't see", [blind]));
+  } else if (blind) {
     const said = unquote(blind.q).replace(/\.$/, "");
     angles.push({
       name: "The leak you can't count",
       insight: "Buyers already believe they lose replacement work; what they lack is the number.",
       hooks: [
-        `"${said}."`,
+        quoteLine(said),
         `You can't fix a leak you can't count.`,
         `Put a number on the replacement jobs your techs already found.`,
         isCalc && inputs >= 3 ? `${inputs === 4 ? "Four" : inputs} numbers you already know. One you don't.` : `The revenue leak that never shows up on a report.`,
@@ -133,7 +215,9 @@ function offline(rc: RunContext): Out {
 
   // 3. The handoff that breaks.
   const handoff = find(sigs, ANGLE_LINES.handoff);
-  if (handoff) {
+  if (handoff && !isSample(handoff.s)) {
+    angles.push(verbatimAngle("Where the handoff breaks", [handoff]));
+  } else if (handoff) {
     const nextQuote = approved.find((a) => /next quote/i.test(a));
     angles.push({
       name: "The handoff that breaks",
@@ -154,7 +238,9 @@ function offline(rc: RunContext): Out {
 
   // 4. Every tech, your best tech.
   const best = find(sigs, ANGLE_LINES.best);
-  if (best) {
+  if (best && !isSample(best.s)) {
+    angles.push(verbatimAngle("Their best person", [best]));
+  } else if (best) {
     const techs = techsOf(best.s);
     angles.push({
       name: "Every tech, your best tech",
@@ -175,13 +261,16 @@ function offline(rc: RunContext): Out {
 
   // 5. Proof from a customer.
   const proof = sigs.filter((s) => s.source === "review").map((s) => ({ s, q: findSentence(s, ANGLE_LINES.proof) })).find((x): x is { s: SignalLite; q: string } => Boolean(x.q));
-  if (proof) {
+  if (proof && !isSample(proof.s)) {
+    const second = findSentence(proof.s, /same day/i);
+    angles.push(verbatimAngle("In a customer's words", [proof, ...(second && second !== proof.q ? [{ s: proof.s, q: second }] : [])]));
+  } else if (proof) {
     const second = findSentence(proof.s, /same day/i);
     angles.push({
       name: "It paid for itself",
       insight: "Customers who use follow-up quotes describe a payback measured in weeks.",
       hooks: [
-        `"${proof.q.replace(/\.$/, "")}."`,
+        quoteLine(proof.q),
         second ? `Techs flag replacements from the truck. The office quotes the same day.` : `Replacement quotes, out the same day.`,
         `What would one extra replacement job a month pay for?`,
         `Paid for the year in the first month. One customer's words, not ours.`,
@@ -189,18 +278,21 @@ function offline(rc: RunContext): Out {
       evidence: [{ signal_id: proof.s.id, quote: proof.q }, ...(second && second !== proof.q ? [{ signal_id: proof.s.id, quote: second }] : [])],
     });
     ads.push(
-      { angle: "It paid for itself", headline: "Paid for the year in month one", primary_text: `"${proof.q.replace(/\.$/, "")}." From a ${/g2/i.test(proof.s.title) ? "G2" : /capterra/i.test(proof.s.title) ? "Capterra" : "customer"} review. ${cta}`, visual: `The review itself as the creative: star rating and quote on a plain background, reviewer's company size underneath. No product UI.` },
+      { angle: "It paid for itself", headline: "Paid for the year in month one", primary_text: `${quoteLine(proof.q)} From a ${/g2/i.test(proof.s.title) ? "G2" : /capterra/i.test(proof.s.title) ? "Capterra" : "customer"} review. ${cta}`, visual: `The review itself as the creative: star rating and quote on a plain background, reviewer's company size underneath. No product UI.` },
       { angle: "It paid for itself", headline: "One replacement pays for it", primary_text: `What would one recovered replacement job a month pay for? Count the ones you missed. ${cta}`, visual: `A replacement invoice with the total circled, next to a much smaller annual software receipt. Desk-level photo.` },
     );
   }
 
   const order = angles.map((a) => a.name);
   const lead = order.includes("The leak you can't count") ? "The leak you can't count" : order[0];
+  const sampleLead = lead ? angles.find((a) => a.name === lead)!.evidence.every((e) => isSample(rc.signalMap.get(e.signal_id) ?? ({} as SignalLite))) : false;
   return {
     offer: offer.detail ? `${offer.name}: ${offer.detail}` : offer.name,
-    hypothesis: lead
-      ? `Angles built on a concrete loss in the buyer's own words will beat product-feature framing on demo requests per click. We expect "${lead}" to win because inbound already arrives using that language.`
-      : "",
+    hypothesis: !lead
+      ? ""
+      : sampleLead
+        ? `Angles built on a concrete loss in the buyer's own words will beat product-feature framing on demo requests per click. We expect "${lead}" to win because inbound already arrives using that language.`
+        : `Hooks quoted from the buyer's own words, tested against each other on demo requests per click. "${lead}" leads the batch.`,
     channel: isCalc ? "paid_social" : isPilot ? "outbound" : "paid_social",
     metric: isPilot ? "qualified_reply" : "demo_request",
     angles,
@@ -252,7 +344,7 @@ ${renderDocs(rc, READS)}
 ${renderBanned(parseBanned(rc.docs["outbound/banned-language"], rc.docs["content/founder-voice"]))}
 
 The offer to test: **${offer.name}**${offer.detail ? `: ${offer.detail}` : ""}
-
+${testPhraseOf(rc) ? `\nThis batch is for the test "${testPhraseOf(rc)}". Every hook must use the words "${phraseCore(testPhraseOf(rc)!)}", built from signal quotes that contain them. If no signal says it, return no angles.\n` : ""}
 How to work:
 - Start from the truth file's recommended test and buyer language, then find 5 genuinely different angles (loss, invisible problem, broken process, aspiration, proof, etc.). Each angle cites the signals behind it.
 - 4 hooks per angle. Under 15 words. Use the buyer's words, numbers that appear in the signals, never invented stats.
@@ -269,16 +361,20 @@ Write the batch for ${rc.tenantName}.`;
     const banned = parseBanned(rc.docs["outbound/banned-language"], rc.docs["content/founder-voice"]);
     const sup = keepSupported(o.angles, rc.signalMap);
     const keptNames = new Set(sup.kept.map((a) => a.name));
+    // A run started for a test phrase must test that phrase: hooks and ads that don't use it are dropped.
+    const phrase = testPhraseOf(rc);
+    const words = phrase ? phraseWords(phrase) : [];
+    const onPhrase = (t: string) => !phrase || mentionsPhrase(t, words);
     let bannedHooks = 0;
     const angles = sup.kept.map((a) => {
-      const hooks = a.hooks.filter((h) => {
+      const hooks = a.hooks.filter(onPhrase).filter((h) => {
         const bad = findBanned(h, banned).length > 0;
         if (bad) bannedHooks++;
         return !bad;
       });
       return { ...a, hooks };
     });
-    const ads = o.ads.filter((x) => keptNames.has(x.angle)).filter((x) => {
+    const ads = o.ads.filter((x) => keptNames.has(x.angle)).filter((x) => onPhrase(`${x.headline} ${x.primary_text}`)).filter((x) => {
       const bad = findBanned(`${x.headline} ${x.primary_text}`, banned).length > 0;
       if (bad) bannedHooks++;
       return !bad;
@@ -290,6 +386,14 @@ Write the batch for ${rc.tenantName}.`;
     const nHooks = angles.reduce((n, a) => n + a.hooks.length, 0);
     const [offerName, ...offerRest] = o.offer.split(/:\s+/);
     // A batch with no hooks is not a test: keep no draft, start no experiment.
+    if (nHooks === 0 && phrase) {
+      return {
+        substantive: false,
+        summary: `No hook batch for "${phrase}": none of the ${countBySource(rc.signals) || "0 signals"} in the last ${rc.spec.lookbackDays} days has a line that says "${phraseCore(phrase)}", and hooks for this test are built only from quotes that do. Add a note where a buyer says it, or rename the test to the words buyers use.`,
+        stats: { angles: 0, hooks: 0, ads: 0, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
+        drafts: [],
+      };
+    }
     if (nHooks === 0) {
       const why = [sup.dropped ? `${sup.dropped} angle${sup.dropped === 1 ? "" : "s"} dropped because their quotes didn't match the signals` : null, bannedHooks ? `${bannedHooks} line${bannedHooks === 1 ? "" : "s"} removed for banned language` : null].filter(Boolean);
       return {

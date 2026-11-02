@@ -144,3 +144,41 @@ export function inferOutcome(source: string, content: string): "won" | "lost" | 
   if (won === lost) return null;
   return won ? "won" : "lost";
 }
+
+/**
+ * A source label pasted in front of a quote: "G2 review:", "Sales call with Dana (Brightline):",
+ * "Support ticket #412 -". Only a prefix that names a kind of note counts, so "Price: too high" stays.
+ */
+const SOURCE_LABEL =
+  /^\s*(?:[\w&.'#-]+\s+){0,3}(?:review|call|ticket|note|notes|email|interview|chat|survey|demo|meeting|feedback|transcript)(?:\s+#?\d+)?(?:\s+(?:with|from|by|for)\s+[^:"“]{1,80})?\s*(?::|\s[-–—])\s+/i;
+
+/** A quote without its source label ("G2 review: Paid for…" → "Paid for…"). Still a substring of the original. */
+export function stripLabel(q: string): string {
+  const s = q.replace(SOURCE_LABEL, "");
+  return s.length >= 8 ? s : q;
+}
+
+/** A verbatim sentence ready to print as a hook: label removed, one pair of quote marks, no `."."`. */
+export function quoteLine(q: string): string {
+  const body = stripLabel(q)
+    .trim()
+    .replace(/^["“”']+|["“”']+$/g, "")
+    .trim();
+  return `"${/[.!?…]$/.test(body) ? body : `${body}.`}"`;
+}
+
+/** Content words of a test phrase, with the test verb dropped: "Lead with drive-time report" → ["drive", "time", "report"]. */
+export function phraseWords(phrase: string): string[] {
+  const core = phrase
+    .replace(/^\s*(lead|open|start|go|test|try)\s+(with|on)\s+/i, "")
+    .replace(/^\s*(test|try)\s+/i, "")
+    .toLowerCase();
+  return core.split(/[^a-z0-9']+/).filter((w) => w.length > 2 && !STOP.has(w));
+}
+
+/** Whether a sentence uses every content word of a test phrase (hyphens and case ignored, plurals allowed). */
+export function mentionsPhrase(sentence: string, words: string[]): boolean {
+  if (!words.length) return false;
+  const have = sentence.toLowerCase().split(/[^a-z0-9']+/);
+  return words.every((w) => have.some((h) => h === w || h === `${w}s` || h === `${w}es` || (w.endsWith("s") && h === w.slice(0, -1))));
+}

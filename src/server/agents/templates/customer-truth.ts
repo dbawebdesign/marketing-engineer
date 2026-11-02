@@ -4,6 +4,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { dedupeEvidence, keepSupported, type VerifiedEvidence } from "../evidence";
 import { countBySource, listJoin, meta, shortDate } from "../format";
 import { nestQuotes, stripOuterQuotes, tidyQuote } from "@/lib/quotes";
+import { stripLabel } from "../text";
 import { bestSentence, clip, sentences, strongestSentences, tokens, topPhrases } from "../text";
 import { PULSE_MIN } from "../readiness";
 
@@ -195,7 +196,7 @@ function offline(rc: RunContext): Out {
     const strongest = (pains.length ? pains : ranked).slice(0, 3);
     if (strongest.length) {
       noTheme = true;
-      headline = `No theme repeats across these ${sigs.length} signals yet. Strongest single signal: ‘${nestQuotes(tidyQuote(clip(strongest[0]!.sentence, 160)))}’.`;
+      headline = `No theme repeats across these ${sigs.length} signals yet. Strongest single signal: ‘${nestQuotes(tidyQuote(clip(stripLabel(strongest[0]!.sentence), 160)))}’`.replace(/([^.!?…])’$/, "$1’.");
       for (const x of strongest) {
         changes.push({
           claim: `${OFFLINE_SINGLE}: ${SOURCE_WORD[x.item.source]?.replace(/s$/, "") ?? "note"}${x.item.account ? ` from ${x.item.account}` : ""}`,
@@ -272,7 +273,7 @@ const receiptLine = (e: VerifiedEvidence) => `"${tidyQuote(e.quote)}" (${[e.sour
 const receipts = (ev: VerifiedEvidence[]) => (ev.length ? `\n${ev.map(receiptLine).map((l) => `  > ${l}`).join("\n  >\n")}` : "");
 
 /** The memo body: each bullet with all of its receipts. */
-function md(o: Kept) {
+function md(o: Kept, notUsed = "") {
   const changes = o.changes.slice(0, 4);
   const objections = o.objections.slice(0, 3);
   // Phrases already named in a claim are not news twice.
@@ -285,6 +286,7 @@ function md(o: Kept) {
     words.length ? `## Their words\n${words.map((l) => `"${l.phrase}" (${l.note.replace(/ mentions?$/, "")})`).join(" · ")}` : null,
     objections.length ? `## Objections\n${objections.map((x) => `- **${x.objection}** (${x.evidence.length})${receipts(x.evidence)}`).join("\n")}` : null,
     isRealTest(t) ? `## Test this week\n**${t.name}.** ${t.hypothesis} Run it on ${t.channel.replace("_", " ")}; decided by ${t.metric.toLowerCase()}.` : null,
+    notUsed || null,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -336,13 +338,17 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
     const language = keepSupported(o.language, rc.signalMap);
     // Quotes are verified verbatim first, then tidied for print (inner double quotes become ‘…’),
     // so the draft's receipts and the quotes in its body are the same strings.
-    const tidy = <T extends { evidence: VerifiedEvidence[] }>(xs: T[]) => xs.map((x) => ({ ...x, evidence: x.evidence.map((e) => ({ ...e, quote: tidyQuote(e.quote) })) }));
+    const tidy = <T extends { evidence: VerifiedEvidence[] }>(xs: T[]) => xs.map((x) => ({ ...x, evidence: x.evidence.map((e) => ({ ...e, quote: tidyQuote(stripLabel(e.quote)) })) }));
     changes.kept = tidy(changes.kept);
     objections.kept = tidy(objections.kept).map((x) => ({ ...x, count: x.evidence.length }));
     const cleaned = { ...o, changes: changes.kept, objections: objections.kept, language: language.kept } as Kept;
     const dropped = changes.dropped + objections.dropped;
     const evidence = dedupeEvidence([...changes.kept, ...objections.kept].flatMap((c) => c.evidence));
     const date = shortDate(rc.now);
+    // Signals read but not quoted anywhere in the memo: say how many, so nothing looks silently ignored.
+    const quoted = new Set([...evidence.map((e) => e.signal_id), ...language.kept.flatMap((l) => l.evidence.map((e) => e.signal_id))]);
+    const unused = rc.signals.filter((s) => !quoted.has(s.id));
+    const notUsed = unused.length ? `_Not used: ${unused.length} signal${unused.length === 1 ? "" : "s"} (${countBySource(unused)}), read but not quoted._` : "";
     // A memo is worth reviewing only when at least one change survived verification.
     const substantive = changes.kept.length > 0;
     // Screens wrap the headline in “…”: never let it start or end with its own quote marks.
@@ -361,7 +367,7 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
         {
           type: "market_memo",
           title: `What the market is telling us · ${date}`,
-          body: md({ ...cleaned, headline, recommended_test: test ?? cleaned.recommended_test }),
+          body: md({ ...cleaned, headline, recommended_test: test ?? cleaned.recommended_test }, notUsed),
           payload: {
             headline,
             recommended_test: test,

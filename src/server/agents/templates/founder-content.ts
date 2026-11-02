@@ -3,7 +3,7 @@ import type { AgentTemplate, DraftInput, RunContext } from "../types";
 import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
-import { clip, LOSS_WORDS, sentences, tokens, topPhrases } from "../text";
+import { clip, LOSS_WORDS, sentences, stripLabel, tokens, topPhrases } from "../text";
 import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf, words } from "./guardrails";
 import { countBySource, draftTitle, fromSignals, meta, shippable } from "../format";
 
@@ -181,7 +181,7 @@ function offline(rc: RunContext): Out {
     .filter((s) => s.source === "churn_note" && !used.has(s.id))
     .sort((a, b) => Number(/if we had|would have/i.test(b.content)) - Number(/if we had|would have/i.test(a.content)))[0];
   if (churn) {
-    const ss = sentences(churn.content);
+    const ss = sentences(churn.content).map(stripLabel);
     const why = ss.find((x) => /didn't see|never|only/i.test(x)) ?? ss[0]!;
     const regret = ss.find((x) => /if we had|would have/i.test(x));
     const aboutMoney = /revenue|money|upside/i.test(churn.content);
@@ -194,8 +194,8 @@ function offline(rc: RunContext): Out {
         regret ? `Then the line that stuck: "${bare(regret).replace(/^If/, "if").replace(/^./, (c) => c.toUpperCase())}"` : null,
         aboutMoney
           ? `That's on us. If software only saves time, it's a cost line. If it shows you money you were missing, it's the last thing you cancel.`
-          : `That's on us. Most cancellations are decided in the first two weeks, by what the customer never set up.`,
-        aboutMoney ? `The lesson for us: show a new customer the money they were missing in week one, before anything else.` : `The lesson for us: onboarding is the product. The first two weeks decide the renewal.`,
+          : `That's on us.`,
+        aboutMoney ? `The lesson for us: show a new customer the money they were missing in week one, before anything else.` : `The lesson for us: ask what a new customer hasn't set up yet, before they have to tell us on the way out.`,
       ]
         .filter(Boolean)
         .join("\n\n"),
