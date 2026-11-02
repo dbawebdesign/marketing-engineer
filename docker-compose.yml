@@ -1,0 +1,37 @@
+# Local or single-host deployment: Postgres + web + worker.
+# docker compose up --build   then open http://localhost:3000
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: me
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 20
+  migrate:
+    build: .
+    command: ["node_modules/.bin/tsx", "scripts/migrate.ts"]
+    environment:
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@db:5432/me
+      ME_APP_LOGIN_PASSWORD: ${ME_APP_LOGIN_PASSWORD:-app-password-change-me}
+    depends_on: { db: { condition: service_healthy } }
+  web:
+    build: .
+    ports: ["3000:3000"]
+    env_file: [{ path: .env.docker, required: false }]
+    environment: &env
+      DATABASE_URL: postgres://me_app_login:${ME_APP_LOGIN_PASSWORD:-app-password-change-me}@db:5432/me
+      DATABASE_ADMIN_URL: postgres://postgres:postgres@db:5432/me
+      ME_INLINE_WORKER: "false"
+    depends_on: { migrate: { condition: service_completed_successfully } }
+  worker:
+    build: .
+    command: ["node_modules/.bin/tsx", "src/worker/index.ts"]
+    env_file: [{ path: .env.docker, required: false }]
+    environment: *env
+    depends_on: { migrate: { condition: service_completed_successfully } }
+volumes:
+  pgdata:
