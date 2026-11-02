@@ -22,6 +22,15 @@ const chip = (on: boolean) =>
   cx("h-8 rounded-lg px-3 text-[13px] transition-colors", on ? "bg-ink font-medium text-bg" : "bg-surface text-ink-2 ring-1 ring-line-strong hover:bg-subtle hover:text-ink");
 const select = "h-8 rounded-lg bg-surface pl-2.5 pr-7 text-[13px] text-ink ring-1 ring-line-strong focus:outline-none focus:ring-2 focus:ring-accent";
 
+/** "UTC", "EST": the same zone name the system headers show after "Next Tue 7:00 AM". */
+const tzShort = (tz: string) => {
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: tz, timeZoneName: "short" }).formatToParts(new Date()).find((p) => p.type === "timeZoneName")?.value ?? tz;
+  } catch {
+    return tz;
+  }
+};
+
 function SchedulePicker({ cron, timezone, onChange }: { cron: string | null; timezone: string; onChange: (c: string | null) => void }) {
   const parsed = parseCron(cron);
   const [custom, setCustom] = useState(!!cron && !parsed);
@@ -86,7 +95,7 @@ function SchedulePicker({ cron, timezone, onChange }: { cron: string | null; tim
               </option>
             ))}
           </select>
-          <span className="text-ink-3">{timezone}</span>
+          <span className="text-ink-3">{tzShort(timezone)}</span>
         </div>
       ) : null}
       {custom ? (
@@ -228,7 +237,7 @@ export function AgentEditor({
         <div className={field}>
           <Label>Model</Label>
           <div>
-            <div className={cx("flex flex-wrap gap-1.5", !aiEnabled && "opacity-50")} role="radiogroup" aria-label="Model" aria-disabled={!aiEnabled || undefined} aria-describedby={aiEnabled ? undefined : "model-offline"}>
+            <div className="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Model" aria-disabled={!aiEnabled || undefined} aria-describedby={aiEnabled ? undefined : "model-offline"}>
               {models.map((m) => (
                 <button
                   key={m.id}
@@ -238,9 +247,10 @@ export function AgentEditor({
                   title={aiEnabled ? m.id : undefined}
                   disabled={!aiEnabled}
                   onClick={() => set("model", m.id)}
-                  className={cx(chip(s.model === m.id), !aiEnabled && "cursor-not-allowed")}
+                  className={cx(chip(s.model === m.id), !aiEnabled && "cursor-not-allowed", !aiEnabled && s.model !== m.id && "opacity-50")}
                 >
                   {MODEL_LABEL[m.tier]}
+                  {!aiEnabled && s.model === m.id ? <span className="ml-1 font-normal opacity-70">(offline)</span> : null}
                 </button>
               ))}
             </div>

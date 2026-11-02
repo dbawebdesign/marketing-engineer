@@ -21,7 +21,7 @@ function bodyOf(title: string, body: string) {
 
 /**
  * A pending draft, previewed in place: title and the first lines, fading out.
- * "Review in Inbox" is the next action; "Open" reads the rest here.
+ * "Review in Inbox" is the next action; "Show full draft" reads the rest here.
  */
 export function DraftPreview({
   title,
@@ -95,7 +95,7 @@ export function DraftPreview({
         </L>
         {long ? (
           <button type="button" className={buttonClass("ghost", "sm")} aria-expanded={open} aria-controls={`${id}-b`} onClick={() => setOpen((o) => !o)}>
-            {open ? "Collapse" : "Open"}
+            {open ? "Show less" : "Show full draft"}
           </button>
         ) : null}
       </div>

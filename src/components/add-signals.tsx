@@ -7,6 +7,7 @@ import { addSignalsAction, importCsvAction, runAgentAction } from "@/app/(app)/a
 import { pulseOfferAction } from "@/app/(app)/actions-signals";
 import { Button, Input, Label, Textarea, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
+import { inferAccount } from "@/lib/infer-account";
 
 const SOURCES: [string, string][] = [
   ["sales_call", "Sales call"],
@@ -51,6 +52,8 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const [source, setSource] = useState("sales_call");
   const [content, setContent] = useState("");
   const [account, setAccount] = useState("");
+  // The account guessed from the note ("Call with Polar Mechanical: …"); typing your own wins.
+  const [guessed, setGuessed] = useState<string | null>(null);
   const [split, setSplit] = useState(true);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -92,6 +95,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
       : r.duplicates ? `${plural(r.duplicates, "signal")} already here` : "Nothing new to add";
     setContent("");
     setAccount("");
+    setGuessed(null);
     setOpen(false);
     router.refresh();
     const offer = r.inserted ? await pulseOfferAction().catch(() => null) : null;
@@ -180,7 +184,18 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             <Label hint={split && count > 1 ? plural(count, "note") : undefined}>Paste notes</Label>
             <Textarea
               value={content}
-              onChange={(e) => setContent(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setContent(v);
+                if (!account.trim() || account === guessed) {
+                  // One account field covers every note: only fill it when all notes name the same one.
+                  const notes = (split ? v.split(/\n\s*\n+/) : [v]).filter((c) => c.trim());
+                  const all = notes.map(inferAccount);
+                  const g = all.length && all.every((x) => x && x === all[0]) ? all[0]! : null;
+                  setGuessed(g);
+                  setAccount(g ?? "");
+                }
+              }}
               rows={12}
               autoFocus
               placeholder={"Paste call summaries, tickets, reviews…\n\nSeparate notes with a blank line to add many at once."}
@@ -191,7 +206,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             Each paragraph is a separate note
           </label>
           <label className="block">
-            <Label hint="optional">Account</Label>
+            <Label hint={guessed && account === guessed ? "from your note" : "optional"}>Account</Label>
             <Input value={account} onChange={(e) => setAccount(e.target.value)} placeholder="e.g. Polar Mechanical" />
           </label>
           <div className="rounded-xl border border-dashed border-line-strong p-4 text-sm text-ink-2">

@@ -53,7 +53,7 @@ const REVIEW_ROWS = 5;
 const DOWNSTREAM: System[] = ["founder_content", "outbound_signal", "creative_testing"];
 
 const fmtNext = (a: Agent) =>
-  new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: a.timezone || "UTC" }).format(new Date(a.next_run_at!));
+  new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: a.timezone || "UTC", timeZoneName: "short" }).format(new Date(a.next_run_at!)).replace(",", "");
 
 export default async function TodayPage({ searchParams }: { searchParams: Promise<{ setup?: string }> }) {
   const ctx = await requireCtx();
@@ -124,6 +124,11 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const pending = reviewable.slice(0, REVIEW_ROWS);
   const headline = headlineOf(truth?.content);
   const running = experiments.find((e) => e.status === "running");
+  // The latest memo's run says what "What the market is telling us" already says: keep it out of Recent activity.
+  const showHeadline = !!(headline && step.kind !== "review_memo");
+  const norm = (t: string | null | undefined) => (t ?? "").replace(/[*_`]/g, "").trim().toLowerCase();
+  const memoRun = showHeadline ? runs.find((r) => r.system === "customer_truth" && r.status === "succeeded") : undefined;
+  const activity = runs.filter((r) => r !== memoRun && !(showHeadline && r.summary && norm(r.summary).includes(norm(headline))));
 
   // Keep the page (and the agent rail) in step with any run still going, wherever it was started.
   const recent = (t: string) => Date.now() - new Date(t).getTime() < 30 * 60_000;
@@ -138,7 +143,7 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
 
   // Before the first approved memo, a three-step "How it works" explains the loop; it leaves once the loop has run.
   // Shown only where the page would otherwise be bare: no review list, no activity yet.
-  const leftBusy = !!(headline && step.kind !== "review_memo") || pending.length > 0 || state.active.length > 0 || runs.length > 0;
+  const leftBusy = !!(headline && step.kind !== "review_memo") || pending.length > 0 || state.active.length > 0 || activity.length > 0;
   const showHow = !state.approvedMemo && step.kind !== "intro" && !leftBusy;
   const how = showHow ? <HowItWorks signals={totalSignals > 0} memo={!!state.pendingMemoId || pendingMemos > 0} /> : null;
   const leftHasContent = leftBusy || !!how;
@@ -224,11 +229,11 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
               </section>
             ) : null}
 
-            {runs.length ? (
+            {activity.length ? (
               <section>
                 <Heading>Recent activity</Heading>
                 <ul>
-                  {runs.map((r) => {
+                  {activity.map((r) => {
                     const outcome = r.status === "failed" ? `Failed: ${r.error ?? "unknown error"}` : r.status === "succeeded" ? (r.summary ?? "Finished") : "Working…";
                     return (
                       <li key={r.id} className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 py-1 text-[13px] sm:grid-cols-[128px_minmax(0,1fr)_auto] sm:items-baseline" title={`${r.agent_name}: ${outcome}`}>

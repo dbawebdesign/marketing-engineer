@@ -54,45 +54,55 @@ const NOUN: Record<string, [string, string?]> = {
 };
 
 /**
- * "5 posts waiting · Review →": the one waiting pattern on every system and agent page, a tinted
- * line linking to the inbox filtered to this system. `preview` adds the first draft below it,
- * only where the page has nothing else showing it (a truth file or brief before the first approval).
+ * "Waiting for review": the one waiting pattern on every system and agent page. A short list of
+ * the waiting drafts (title, age), each opening in the inbox filtered to this system.
+ * `preview` shows the first draft in full instead, with the waiting line as its header, only
+ * where the page has nothing else showing it (a truth file or brief before the first approval).
  */
 export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[]; slug: string; preview?: boolean }) {
   if (!drafts.length) return null;
   const types = new Set(drafts.map((d) => d.type));
   const noun = types.size === 1 ? (NOUN[drafts[0]!.type] ?? ["draft"]) : (["draft"] as [string]);
   const first = drafts[0]!;
-  const href = systemInboxHref(slug, first);
+  if (preview)
+    return (
+      <section className="mb-12" data-pending-block>
+        <DraftPreview
+          title={first.title}
+          body={first.body}
+          meta={metaOf(first.payload)}
+          createdAt={first.created_at}
+          sample={!!first.is_sample}
+          href={systemInboxHref(slug, first)}
+          label="Waiting for review"
+          more={drafts.length - 1}
+        />
+      </section>
+    );
+  const LIMIT = 5;
+  const rows = drafts.slice(0, LIMIT);
   return (
-    <section className="mb-12" data-pending-block>
-      <L
-        href={href}
-        className="group flex items-center gap-3 rounded-xl bg-warn-soft/60 px-4 py-2.5 text-[14px] text-ink transition-colors hover:bg-warn-soft"
-      >
-        <Dot tone="warn" />
-        <span className="min-w-0 flex-1">
-          {plural(drafts.length, noun[0], noun[1])} waiting
-        </span>
-        <span className="flex items-center gap-1 text-[13px] font-medium text-ink-2 group-hover:text-ink">
-          Review <ArrowRight size={14} aria-hidden />
-        </span>
-      </L>
-      {preview ? (
-        <div className="mt-3">
-          <DraftPreview
-            quiet
-            title={first.title}
-            body={first.body}
-            meta={metaOf(first.payload)}
-            createdAt={first.created_at}
-            sample={!!first.is_sample}
-            href={href}
-            label={`Preview · ${timeAgo(first.created_at)}`}
-          />
-        </div>
-      ) : null}
-    </section>
+    <Block
+      title="Waiting for review"
+      meta={
+        <L href={systemInboxHref(slug, first)} className="flex items-center gap-1 hover:text-ink">
+          {plural(drafts.length, noun[0], noun[1])} · Review all <ArrowRight size={13} aria-hidden />
+        </L>
+      }
+    >
+      <ul className={cx(card, "divide-y divide-line overflow-hidden")} data-pending-block>
+        {rows.map((d) => (
+          <li key={d.id}>
+            <L href={systemInboxHref(slug, d)} className="group flex items-center gap-3 px-5 py-3 transition-colors hover:bg-subtle">
+              <Dot tone="warn" />
+              <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{d.title}</span>
+              <span className="shrink-0 text-[13px] text-ink-3 tnum">{timeAgo(d.created_at)}</span>
+              <ArrowRight size={14} className="shrink-0 text-ink-3 group-hover:text-ink" aria-hidden />
+            </L>
+          </li>
+        ))}
+      </ul>
+    </Block>
   );
 }
 
@@ -219,6 +229,8 @@ const postText = (d: Draft) => {
 export function PostsLibrary({ drafts }: { drafts: Draft[] }) {
   const posts = drafts.filter((d) => d.type === "post");
   const approved = posts.filter((d) => d.status === "approved" || d.status === "published");
+  // Nothing approved yet but posts are waiting: the waiting list above says it all.
+  if (!approved.length && posts.some((d) => d.status === "pending")) return null;
   return (
     <Block title="Approved posts" meta={approved.length ? plural(approved.length, "post") : null}>
       {approved.length ? (

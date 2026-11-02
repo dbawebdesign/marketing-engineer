@@ -27,9 +27,10 @@ export function toCron(s: SimpleSchedule) {
   return `${s.minute} ${s.hour} * * ${dow}`;
 }
 
-export const fmtTime = (hour: number, minute = 0) => `${hour}:${String(minute).padStart(2, "0")}`;
+/** "7:00 AM": the one clock format in the UI (schedule picker and "Next Tue 7:00 AM UTC"). */
+export const fmtTime = (hour: number, minute = 0) => `${hour % 12 || 12}:${String(minute).padStart(2, "0")} ${hour < 12 ? "AM" : "PM"}`;
 
-/** "Weekdays at 8:00", or null when the cron isn't one of the simple shapes. */
+/** "Weekdays at 8:00 AM", or null when the cron isn't one of the simple shapes. */
 export function describeCron(cron: string | null | undefined): string | null {
   const s = parseCron(cron);
   if (!s) return null;

@@ -156,8 +156,8 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
             </>
           ) : null}
 
-          {/* Everything else: one line to the filtered inbox, at most one preview. */}
-          {system === "founder_content" || system === "outbound_signal" || system === "creative_testing" || system === "ai_search" ? <PendingBlock drafts={pending} slug={slug} /> : null}
+          {/* Everything else: the waiting list (Outbound's queue already lists its waiting messages first-class). */}
+          {system === "founder_content" || system === "creative_testing" || system === "ai_search" ? <PendingBlock drafts={pending} slug={slug} /> : null}
 
           {system === "founder_content" ? <PostsLibrary drafts={drafts} /> : null}
 

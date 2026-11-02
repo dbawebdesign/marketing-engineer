@@ -9,7 +9,7 @@ import { Button, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
 import { L, useBase } from "./nav";
 
-/** Runs being followed right now; LiveRefresh holds off so a follower can finish and navigate. */
+/** Runs being followed right now; LiveRefresh holds off so a follower can finish. */
 export const following = { n: 0 };
 const followed = new Map<string, Set<(phase: "running" | "done") => void>>();
 
@@ -17,8 +17,8 @@ type Router = ReturnType<typeof useRouter>;
 
 /**
  * Follow a run to the end, independent of any component: the button that started it
- * may unmount when the page re-renders. On success, open its first draft, but only
- * if the person is still on the page where they asked for it.
+ * may unmount when the page re-renders. On success, stay put and toast, with a Review
+ * action to the first draft when there is one.
  */
 function follow(runId: string, router: Router, base: string, listener: (phase: "running" | "done") => void) {
   const existing = followed.get(runId);
@@ -29,7 +29,6 @@ function follow(runId: string, router: Router, base: string, listener: (phase: "
   const listeners = new Set([listener]);
   followed.set(runId, listeners);
   following.n++;
-  const from = window.location.pathname;
   const emit = (p: "running" | "done") => listeners.forEach((l) => l(p));
   const finish = () => {
     followed.delete(runId);
@@ -46,8 +45,9 @@ function follow(runId: string, router: Router, base: string, listener: (phase: "
       if (run.status === "succeeded") {
         const d = await runFirstDraftAction(runId).catch(() => null);
         if (d?.ok && d.data) {
-          toast.ok("Done. Your draft is ready for review.");
-          if (window.location.pathname === from) router.push(`${base}/inbox?d=${d.data}`);
+          // One behaviour everywhere: stay on the page; the toast offers the way to the draft.
+          const id = d.data;
+          toast.ok("Done. Your draft is ready for review.", { key: `run-${runId}`, duration: 9000, action: { label: "Review", run: () => router.push(`${base}/inbox?d=${id}`) } });
         } else toast.ok(run.summary || "Done. Nothing new to review this time.");
       } else toast.error(run.error || "The run failed.");
       finish();
@@ -67,7 +67,7 @@ function follow(runId: string, router: Router, base: string, listener: (phase: "
   return () => void listeners.delete(listener);
 }
 
-/** Runs an agent, shows progress in place, then opens the first draft it wrote. */
+/** Runs an agent, shows progress in place, then toasts with a link to the first draft it wrote. */
 export function RunButton({
   agentId,
   label = "Run now",

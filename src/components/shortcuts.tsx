@@ -3,8 +3,14 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { Kbd } from "./ui";
+import { Kbd, cx } from "./ui";
 import { useBase } from "./nav";
+
+/** What ⌘Z can actually take back (matches UNDOABLE_TYPES and the two-minute window on the server). */
+const UNDO = "Undo the last approve or reject";
+const HINT: Record<string, string> = {
+  [UNDO]: "Posts, emails and answer packs, within 2 minutes. Memos, briefs and test batches are final.",
+};
 
 /** What the command palette can do to the draft open in the inbox right now. */
 export type DraftCommands = { title: string; approve: () => void; edit: () => void; reject: () => void; copy: () => void };
@@ -127,7 +133,7 @@ export function ShortcutsSheet() {
     {
       name: "Anywhere",
       rows: [
-        [<Kbd key="z">{mod}Z</Kbd>, "Undo the last review (when possible)"],
+        [<Kbd key="z">{mod}Z</Kbd>, UNDO],
         [<Kbd key="k">{mod}K</Kbd>, "Search and commands"],
         [<Kbd key="q">?</Kbd>, "This sheet"],
       ],
@@ -159,8 +165,11 @@ export function ShortcutsSheet() {
             <h3 className="mb-1 text-[12px] font-medium text-ink-3">{g.name}</h3>
             <dl>
               {g.rows.map(([keys, label]) => (
-                <div key={label} className="flex h-8 items-center justify-between gap-4 text-[13.5px]">
-                  <dt className="text-ink-2">{label}</dt>
+                <div key={label} className={cx("flex items-center justify-between gap-4 text-[13.5px]", HINT[label] ? "py-1.5" : "h-8")}>
+                  <dt className="text-ink-2">
+                    {label}
+                    {HINT[label] ? <span className="mt-0.5 block text-[12px] leading-snug text-ink-3">{HINT[label]}</span> : null}
+                  </dt>
                   <dd className="flex shrink-0 gap-1">{keys}</dd>
                 </div>
               ))}

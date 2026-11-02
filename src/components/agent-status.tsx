@@ -15,7 +15,7 @@ export type AgentStatus = {
   label: string;
   /** Drafts from the last finished run; null when there's no finished run. */
   drafts: number | null;
-  /** Quiet secondary text: "Paused" or "Next Tue 7:00 AM"; null when nothing is scheduled. */
+  /** Quiet secondary text: "Paused" or "Next Tue 7:00 AM UTC"; null when nothing is scheduled. */
   next: string | null;
 };
 
@@ -25,7 +25,7 @@ export function agentStatus(a: AgentLike): AgentStatus {
   const next = !a.enabled
     ? "Paused"
     : a.schedule_cron && a.next_run_at
-      ? `Next ${new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: a.timezone || "UTC" }).format(new Date(a.next_run_at))}`
+      ? `Next ${new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: a.timezone || "UTC", timeZoneName: "short" }).format(new Date(a.next_run_at)).replace(",", "")}`
       : null;
   if (!r) return { kind: "never", label: "Never run", drafts: null, next };
   if (r.status === "running" || r.status === "queued") return { kind: "running", label: "Running…", drafts: null, next };
