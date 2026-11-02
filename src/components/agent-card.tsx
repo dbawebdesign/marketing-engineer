@@ -3,14 +3,9 @@ import type { Agent } from "@/server/services/agents";
 import { L } from "./nav";
 import { AgentRun } from "./run-button";
 import { AgentStatusText, agentStatus } from "./agent-status";
+import { needsLine } from "@/lib/next-step";
 import { buttonClass, cx } from "./ui";
 
-/** The readiness reason without the agent's name (the line already starts with it): "Reads sales calls: 3 in the last 7 days. It needs at least 5". */
-function readinessLine(name: string, reason: string | null) {
-  if (!reason) return "Not enough to draft from yet";
-  const r = reason.startsWith(`${name} `) ? reason.slice(name.length + 1) : reason;
-  return (r.charAt(0).toUpperCase() + r.slice(1)).replace(/\.$/, "");
-}
 
 /** One quiet line about the agent behind a system: name, what actually happened last, what's scheduled. */
 export function AgentMeta({ agent, className }: { agent: Agent; className?: string }) {
@@ -31,14 +26,14 @@ export function AgentMeta({ agent, className }: { agent: Agent; className?: stri
       {agent.readiness && !agent.readiness.ready ? (
         <span>
           <span aria-hidden>· </span>
-          {readinessLine(agent.name, agent.readiness.reason)}
+          <span title={agent.readiness.reason ?? undefined}>{needsLine(agent.readiness)}</span>
         </span>
       ) : null}
     </p>
   );
 }
 
-/** Job spec, plus the agent's next action (Run, or Add signals when its window is too thin). `run={false}` when the page body already offers it. */
+/** Job spec, plus Run when the agent's readiness passes. When it doesn't, AgentMeta's quiet "Needs …" line says why: never both. `run={false}` when the page body already offers it. */
 export function AgentActions({
   agent,
   canRun,
@@ -59,7 +54,7 @@ export function AgentActions({
       <L href={`/agents/${agent.id}`} className={buttonClass("ghost", "sm")}>
         <SlidersHorizontal size={14} aria-hidden /> Job spec
       </L>
-      {canRun && run ? <AgentRun agentId={agent.id} readiness={agent.readiness} quiet={quiet} activeRunId={activeRunId} /> : null}
+      {canRun && run && (!agent.readiness || agent.readiness.ready || activeRunId) ? <AgentRun agentId={agent.id} readiness={agent.readiness} quiet={quiet} activeRunId={activeRunId} /> : null}
     </div>
   );
 }

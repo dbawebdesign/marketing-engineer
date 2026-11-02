@@ -20,7 +20,9 @@ import { AgentStatusText, agentStatus } from "@/components/agent-status";
 import { testAngle } from "@/components/system-views";
 import { can } from "@/lib/rbac";
 import { fmtScore } from "@/lib/experiment-results";
-import { nextStep, type NextStep, type StepAgent } from "@/lib/next-step";
+import { needsLine, type NextStep } from "@/lib/next-step";
+import { nestQuotes, stripOuterQuotes } from "@/lib/quotes";
+import { resolveNextStep } from "@/server/services/next-step";
 import { DemoButton } from "@/components/demo-button";
 import { LiveRefresh } from "@/components/live-refresh";
 
@@ -50,7 +52,6 @@ function Heading({ children, aside }: { children: ReactNode; aside?: ReactNode }
 }
 
 const REVIEW_ROWS = 5;
-const DOWNSTREAM: System[] = ["founder_content", "outbound_signal", "creative_testing"];
 
 const fmtNext = (a: Agent) =>
   new Intl.DateTimeFormat("en-US", { weekday: "short", hour: "numeric", minute: "2-digit", timeZone: a.timezone || "UTC", timeZoneName: "short" }).format(new Date(a.next_run_at!)).replace(",", "");
@@ -77,45 +78,14 @@ export default async function TodayPage({ searchParams }: { searchParams: Promis
   const canRun = can(ctx.role, "agents:run");
   const canWriteMemory = can(ctx.role, "memory:write");
   const activeFor = (id: string) => state.active.find((r) => r.agent_id === id)?.id ?? null;
-  const toStep = (a: Agent): StepAgent => ({
-    id: a.id,
-    name: a.name,
-    ready: !a.readiness || a.readiness.ready,
-    signals: a.readiness?.signals ?? 0,
-    neverRun: !a.last_run,
-    activeRunId: activeFor(a.id),
-    need: a.readiness?.need,
-  });
   const bySystem = (sys: System) => agents.find((a) => a.system === sys);
   const pulse = bySystem("customer_truth");
-  const downstream = DOWNSTREAM.flatMap((sys) => {
-    const a = bySystem(sys);
-    return a ? [toStep(a)] : [];
-  });
   const hookLab = bySystem("creative_testing");
   const pendingMemos = pendingRows.filter((d) => d.type === "market_memo").length;
 
   const askIntro = canWriteMemory && gaps.length > 0 && (sp.setup === "1" || !flags.onboarded);
-  const step = nextStep({
-    introGaps: askIntro ? gaps.length : 0,
-    totalSignals,
-    weekSignals,
-    pulse: pulse ? toStep(pulse) : null,
-    pendingMemoId: state.pendingMemoId,
-    approvedMemo: state.approvedMemo,
-    downstream,
-    hasHookLab: !!hookLab,
-    pendingDrafts: Math.max(pendingTotal - pendingMemos, 0),
-    experiments: experiments.map((e) => ({
-      id: e.id,
-      name: e.name,
-      status: e.status,
-      variants: e.variants.length,
-      measured: !!e.results?.measured,
-      leader: e.results?.leader?.label ?? null,
-    })),
-    can: { run: canRun, review: can(ctx.role, "drafts:review"), writeExperiments: can(ctx.role, "experiments:write") },
-  });
+  // One resolver for Today, the Inbox's clear state and /agents: they never offer different next steps.
+  const { step } = await resolveNextStep(ctx, { introGaps: askIntro ? gaps.length : 0, agents, state, stats, experiments, pendingTotal, pendingMemos });
 
   // The memo the Next card points at stays out of the review list below.
   const memoInCard = step.kind === "review_memo" ? step.draftId : null;
@@ -419,7 +389,7 @@ function NextCard({
       title = "Review the market memo";
       body = (
         <>
-          {memoHeadline ? <span className="text-ink">“{memoHeadline}” </span> : null}
+          {memoHeadline ? <span className="text-ink">{`“${nestQuotes(stripOuterQuotes(memoHeadline))}” `}</span> : null}
           Approve it to update the truth file. Every other agent reads it.
         </>
       );
@@ -477,6 +447,17 @@ function NextCard({
         </>
       ) : null;
       break;
+    case "needs_input": {
+      const line = needsLine({ ready: false, reason: step.agent.reason, need: step.agent.need ?? 1, days: step.agent.days ?? 7 });
+      title = `${step.agent.name} needs more to read`;
+      body = `${line ? `${line.replace(/^Needs/, `${step.agent.name} needs`)}.` : ""} Add it, then run ${step.agent.name}.`;
+      actions = (
+        <L href="/signals?add=1" className={buttonClass("primary")}>
+          <Plus size={14} aria-hidden /> Add signals
+        </L>
+      );
+      break;
+    }
     case "fresh_signals":
       title = "Add this week's signals";
       body = "Nothing new in the last 7 days. Fresh notes keep the memo, and every draft built on it, current.";

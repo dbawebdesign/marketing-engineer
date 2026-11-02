@@ -3,6 +3,8 @@ import { ArrowRight, Check, LoaderCircle } from "lucide-react";
 import { requireCtx } from "@/server/web/session";
 import { getDraft, type Draft } from "@/server/services/drafts";
 import { listAgents, type Agent } from "@/server/services/agents";
+import { resolveNextStep } from "@/server/services/next-step";
+import { needsLine, type NextStep } from "@/lib/next-step";
 import { signalStats } from "@/server/services/signals";
 import { getDoc } from "@/server/services/memory";
 import { todayState } from "@/server/services/review-extra";
@@ -16,7 +18,7 @@ import { LiveRefresh } from "@/components/live-refresh";
 import { buttonClass, plural, timeAgo } from "@/components/ui";
 
 type Link = { href: string; label: string };
-type Step = { title: string; body: ReactNode; links: Link[]; run: string[]; tone?: "done" };
+type Step = { title: string; body: ReactNode; links: Link[]; run: string[]; tone?: "done"; resolve?: boolean };
 
 /** What an approval did, and the natural next move from there. Keyed by draft type. */
 function afterApproval(d: Draft): Step {
@@ -25,12 +27,14 @@ function afterApproval(d: Draft): Step {
     case "market_memo":
       return {
         title: "Truth file updated",
-        body: "Every agent now builds on this week’s memo, and its recommended test is queued. Turn it into posts and outreach next.",
+        body: "Every agent now builds on this week’s memo.",
         links: [
           { href: "/s/truth", label: "View truth file" },
           { href: "/s/creative", label: "See the queued test" },
         ],
-        run: ["founder_content", "outbound_signal", "creative_testing"],
+        // What runs next comes from the shared resolver, so it matches Today and /agents.
+        run: [],
+        resolve: true,
         tone: "done",
       };
     case "cockpit_memo":
@@ -59,7 +63,7 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
   const ctx = await requireCtx();
   const [done, agents, state, stats, truth] = await Promise.all([
     doneId ? getDraft(ctx, doneId).catch(() => null) : null,
-    listAgents(ctx),
+    listAgents(ctx, { readiness: true }),
     todayState(ctx),
     signalStats(ctx),
     getDoc(ctx, "customer-truth/what-the-market-is-telling-us"),
@@ -67,10 +71,12 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
   const signals = stats.reduce((a, b) => a + b.total, 0);
   const bySystem = (s: string) => agents.find((a) => a.system === s);
   const activeFor = (id: string) => state.active.find((r) => r.agent_id === id)?.id ?? null;
+  // Only agents whose readiness passes (or already working) get a Run button.
+  const runnable = (a: Agent | undefined): a is Agent => !!a && (!a.readiness || a.readiness.ready || !!activeFor(a.id));
   const runButtons = (systems: string[], primaryFirst = false) =>
     systems
       .map(bySystem)
-      .filter((a): a is Agent => !!a)
+      .filter(runnable)
       .map((a, i) => (
         <RunButton
           key={a.id}
@@ -81,6 +87,39 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
           activeRunId={activeFor(a.id)}
         />
       ));
+
+  /** The shared next step, as one sentence and its single action. */
+  const nextFrom = (st: NextStep): { line: string | null; actions: ReactNode } => {
+    switch (st.kind) {
+      case "run_downstream":
+        return { line: `Run ${list(st.agents.map((a) => a.name))} next to draft from it.`, actions: runButtons(st.agents.map((a) => agents.find((x) => x.id === a.id)?.system ?? ""), true) };
+      case "needs_input": {
+        const line = needsLine({ ready: false, reason: st.agent.reason, need: st.agent.need ?? 1, days: st.agent.days ?? 7 });
+        return {
+          line: line ? `${line.replace(/^Needs/, `${st.agent.name} needs`)}.` : null,
+          actions: (
+            <L href="/signals?add=1" className={buttonClass("primary")}>
+              Add signals
+            </L>
+          ),
+        };
+      }
+      case "review_drafts":
+        return { line: `${plural(st.count, "draft")} still waiting for review.`, actions: null };
+      case "start_test":
+      case "hooks_for_test":
+        return {
+          line: "Its recommended test is queued.",
+          actions: (
+            <L href="/today" className={buttonClass("primary")}>
+              See what’s next
+            </L>
+          ),
+        };
+      default:
+        return { line: null, actions: null };
+    }
+  };
 
   // Something is running: say so, and keep the page fresh until drafts arrive.
   if (state.active.length && !done) {
@@ -137,11 +176,17 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
       );
     }
     const step = afterApproval(done);
+    const resolved = step.resolve ? nextFrom((await resolveNextStep(ctx, { agents, state, stats })).step) : null;
+    const buttons = resolved ? resolved.actions : runButtons(step.run, true);
+    const hasButtons = Array.isArray(buttons) ? buttons.length > 0 : !!buttons;
     return (
       <Card title={step.title} eyebrow={<><Check size={13} className="text-accent" /> Inbox is clear</>}>
-        <p>{step.body}</p>
-        {step.run.length ? <Actions>{runButtons(step.run, true)}</Actions> : null}
-        <div className={step.run.length ? "mt-4 flex flex-wrap gap-x-5 gap-y-2" : "mt-6 flex flex-wrap gap-x-5 gap-y-2"}>
+        <p>
+          {step.body}
+          {resolved?.line ? ` ${resolved.line}` : ""}
+        </p>
+        {hasButtons ? <Actions>{buttons}</Actions> : null}
+        <div className={hasButtons ? "mt-4 flex flex-wrap gap-x-5 gap-y-2" : "mt-6 flex flex-wrap gap-x-5 gap-y-2"}>
           {step.links.map((l) => (
             <L key={l.href} href={l.href} className="inline-flex items-center gap-1 text-sm text-ink-2 hover:text-ink">
               {l.label} <ArrowRight size={13} />
@@ -156,7 +201,7 @@ export async function InboxNextStep({ doneId }: { doneId: string | null }) {
   // last ran, they're drafting from an old picture: running them is the next step.
   const truthAt = state.approvedMemo && truth?.content.trim() ? new Date(truth.updated_at) : null;
   const stale = truthAt
-    ? DOWNSTREAM.map(bySystem).filter((a): a is Agent => !!a && a.enabled !== false && (!a.last_run || new Date(a.last_run.created_at) < truthAt))
+    ? DOWNSTREAM.map(bySystem).filter((a): a is Agent => runnable(a) && a.enabled !== false && (!a.last_run || new Date(a.last_run.created_at) < truthAt))
     : [];
   if (stale.length) {
     const never = stale.filter((a) => !a.last_run);

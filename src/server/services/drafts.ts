@@ -103,16 +103,16 @@ async function applyApproval(tx: Tx, ctx: Ctx, d: Draft): Promise<string | null>
       if (d.is_sample) await markLatestVersionSampleTx(tx, "customer-truth/what-the-market-is-telling-us");
       const t = d.payload.recommended_test as { name?: string; hypothesis?: string; channel?: string; metric?: string; angle?: string } | undefined;
       // Only a test with a real name and angle becomes an experiment; a fallback like "Collect more signal" never does.
-      if (!t || !isRealTest(t)) return "Updated the truth file.";
+      if (!t || !isRealTest(t)) return "Truth file updated.";
       const dupe = await tx.query(`select 1 from experiments where lower(name) = lower($1) and status in ('draft','running')`, [t.name]);
       if (!dupe.rowCount) {
         await tx.query(
           `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, variants, is_sample) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
           [ctx.tenantId, d.id, t.name!.slice(0, 200), t.hypothesis ?? "", t.channel ?? "other", t.metric || "qualified_reply", JSON.stringify([{ id: "a", label: t.angle }]), !!d.is_sample],
         );
-        return "Updated the truth file and queued the recommended test.";
+        return "Truth file updated, test queued.";
       }
-      return "Updated the truth file. The recommended test is already queued.";
+      return "Truth file updated, test already queued.";
     }
     case "cockpit_memo":
       await writeDocTx(tx, ctx, "cockpit/weekly-brief", d.body, { note: `Approved: ${d.title}`, authorKind: "agent" });

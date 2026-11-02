@@ -14,6 +14,10 @@ export type StepAgent = {
   activeRunId: string | null;
   /** Signals the agent needs (from its readiness); defaults to Market pulse's minimum. */
   need?: number;
+  /** Why it can't run yet (from readiness), null when ready. */
+  reason?: string | null;
+  /** Its readiness window in days. */
+  days?: number;
 };
 export type StepExperiment = {
   id: string;
@@ -34,7 +38,7 @@ export type NextStepInput = {
   approvedMemo: boolean;
   /** Content drafter, Signal outreach and Hook lab, in that order, when the workspace has them. */
   downstream: StepAgent[];
-  /** The workspace has an agent that writes hooks for a queued test. */
+  /** The workspace has an agent that writes hooks for a queued test, and it has enough to read. */
   hasHookLab: boolean;
   /** Pending drafts, excluding a pending memo. */
   pendingDrafts: number;
@@ -52,6 +56,7 @@ export type NextStep =
   | { kind: "start_test"; experiment: StepExperiment }
   | { kind: "hooks_for_test"; experiment: StepExperiment }
   | { kind: "call_test"; experiment: StepExperiment }
+  | { kind: "needs_input"; agent: StepAgent }
   | { kind: "fresh_signals" }
   | { kind: "caught_up" };
 
@@ -83,6 +88,33 @@ export function nextStep(s: NextStepInput): NextStep {
   const callable = s.experiments.find((e) => e.status === "running" && e.measured);
   if (callable && s.can.writeExperiments) return { kind: "call_test", experiment: callable };
 
+  // Downstream agents that have never run and can't yet: say exactly what the first one is missing.
+  if (s.approvedMemo && s.can.run && !s.downstream.some((a) => a.neverRun && a.ready)) {
+    const blocked = s.downstream.find((a) => a.neverRun && !a.ready && !a.activeRunId);
+    if (blocked) return { kind: "needs_input", agent: blocked };
+  }
+
   if (s.weekSignals === 0) return { kind: "fresh_signals" };
   return { kind: "caught_up" };
+}
+
+type ReadinessLike = { ready: boolean; reason: string | null | undefined; need: number; days: number; signals?: number; reads?: "signals" | "metrics" };
+
+/**
+ * One short line on what an agent is missing, from its readiness: "Needs 1 signal naming a company
+ * with a buying trigger from the last 14 days". Null when it's ready. Falls back to the full reason.
+ */
+export function needsLine(r: ReadinessLike | null | undefined): string | null {
+  if (!r || r.ready) return null;
+  const reason = (r.reason ?? "").trim();
+  const days = `the last ${r.days} ${r.days === 1 ? "day" : "days"}`;
+  if (r.reads === "metrics") return `Needs results (clicks, demo requests, replies) from ${days}`;
+  if (/still empty/.test(reason)) return reason.replace(/^.*? needs /, "Needs ").replace(/\.$/, "");
+  const m = reason.match(/ reads (.+?): (\d+) in the last \d+ days?(?:, (?:none|only \d+) (.+?))?\.(?: It needs.*)?$/);
+  if (m) {
+    const [, sources, have, noun] = m;
+    if (noun) return `Needs ${r.need === 1 ? "a signal" : `${r.need} signals`} ${noun} from ${days}`;
+    return `Needs at least ${r.need} ${r.need === 1 ? "signal" : "signals"} from ${sources} in ${days} (has ${have})`;
+  }
+  return reason ? reason.replace(/\.$/, "") : "Needs more to read first";
 }

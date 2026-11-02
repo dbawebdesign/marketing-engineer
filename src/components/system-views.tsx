@@ -1,4 +1,5 @@
 import { ArrowRight, ChevronDown, Pencil } from "lucide-react";
+import { needsLine } from "@/lib/next-step";
 import type { Draft } from "@/server/services/drafts";
 import type { Experiment } from "@/server/services/experiments";
 import { L } from "./nav";
@@ -732,10 +733,10 @@ export function FirstRun({
           {promise}{" "}
           {ready
             ? `It has ${plural(n, "signal")} from the last ${readiness?.days ?? 7} days to work from. Run it, then approve what it drafts.`
-            : // What's missing is said once, from readiness, in the agent line above; here only what to do about it.
+            : // Exactly what this agent reads and what's missing, from its own readiness.
               readiness!.reads === "metrics"
               ? "Send metric events tagged by angle from your stack with an API key, then run it."
-              : "Paste call notes, tickets, reviews or churn reasons, then run it."}
+              : `${agentName} ${(needsLine({ ...readiness!, reason: readiness!.reason ?? null }) ?? "Needs more to read").replace(/^Needs/, "needs")}. Add that on Signals, then run it.`}
         </p>
         {canLoadSamples ? (
           <div className="mt-5">

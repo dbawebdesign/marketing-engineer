@@ -87,7 +87,7 @@ export function Toaster() {
       {items.map((t) => (
         <div key={t.id} role={t.tone === "error" ? "alert" : "status"} className={cx("animate-in flex max-w-[min(520px,100%)] items-center gap-2 rounded-xl bg-ink py-2 pl-3.5 text-sm text-bg shadow-pop", t.action ? "pr-2" : "pr-3.5")}>
           {t.tone === "ok" ? <CircleCheck size={15} className="shrink-0 text-accent" /> : <CircleX size={15} className="shrink-0 text-danger" />}
-          <span className="min-w-0 truncate" title={t.text}>{t.text}</span>
+          <span className="min-w-0 line-clamp-2" title={t.text}>{t.text}</span>
           {t.action ? (
             <button
               type="button"

@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Play, LoaderCircle, Plus } from "lucide-react";
+import { Play, LoaderCircle } from "lucide-react";
+import { needsLine } from "@/lib/next-step";
 import type { Readiness } from "@/server/agents/readiness";
 import { runAgentAction, runStatusAction } from "@/app/(app)/actions";
 import { runFirstDraftAction } from "@/app/(app)/actions-extra";
-import { Button, buttonClass, cx, plural } from "./ui";
+import { Button, cx, plural } from "./ui";
 import { toast } from "./toast";
 import { L, useBase } from "./nav";
 
@@ -48,7 +49,16 @@ function follow(runId: string, router: Router, base: string, listener: (phase: "
           // One behaviour everywhere: stay on the page; the toast offers the way to the draft.
           const id = d.data;
           toast.ok("Done. Your draft is ready for review.", { key: `run-${runId}`, duration: 9000, action: { label: "Review", run: () => router.push(`${base}/inbox?d=${id}`) } });
-        } else toast.ok(run.summary || "Done. Nothing new to review this time.");
+        } else {
+          // Finished with nothing to review: say why (the runner records the skip reason as the summary).
+          // The toast is one line, so "Why" opens the agent's page, where the full reason sits under the run.
+          const agentId = run.agent_id;
+          toast.ok(run.summary ? `No drafts: ${run.summary}` : "Done. Nothing new to review this time.", {
+            key: `run-${runId}`,
+            duration: 12000,
+            action: run.summary ? { label: "Why", run: () => router.push(`${base}/agents/${agentId}`) } : undefined,
+          });
+        }
       } else toast.error(run.error || "The run failed.");
       finish();
       router.refresh();
@@ -127,8 +137,8 @@ export function RunButton({
 }
 
 /**
- * The right next action for an agent: Run when its window has enough to read,
- * otherwise "Add signals" first, with a quiet Run kept only if there's at least one signal.
+ * The right next action for an agent: Run when its readiness passes (or a run is in flight),
+ * otherwise one quiet "Needs …" line saying exactly what it's missing. Never both.
  */
 export function AgentRun({
   agentId,
@@ -150,13 +160,11 @@ export function AgentRun({
 }) {
   if (!readiness || readiness.ready || activeRunId)
     return <RunButton agentId={agentId} size={size} label={label} variant={quiet ? "secondary" : "primary"} className={className} activeRunId={activeRunId} />;
+  const line = needsLine(readiness);
   return (
-    <span className={cx("flex items-center gap-1.5", className)}>
-      {readiness.signals > 0 ? <RunButton agentId={agentId} size={size} label="Run" variant="ghost" /> : null}
-      <L href="/signals?add=1" className={buttonClass(quiet ? "secondary" : "primary", size)} title={readiness.reason ?? undefined}>
-        <Plus size={14} aria-hidden /> Add signals
-      </L>
-    </span>
+    <L href="/signals?add=1" className={cx("max-w-full truncate text-[13px] text-ink-3 underline-offset-2 hover:text-ink-2 hover:underline", className)} title={readiness.reason ?? undefined}>
+      {line}
+    </L>
   );
 }
 

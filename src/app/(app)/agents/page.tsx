@@ -1,7 +1,9 @@
 import { requireCtx } from "@/server/web/session";
 import { listAgents } from "@/server/services/agents";
+import { resolveNextStep } from "@/server/services/next-step";
 import { SYSTEM_META } from "@/server/agents/types";
 import { can } from "@/lib/rbac";
+import { needsLine } from "@/lib/next-step";
 import { L } from "@/components/nav";
 import { AgentRun } from "@/components/run-button";
 import { AgentStatusText, agentStatus } from "@/components/agent-status";
@@ -12,8 +14,12 @@ export const metadata = { title: "Agents" };
 export default async function AgentsPage() {
   const ctx = await requireCtx();
   const agents = await listAgents(ctx, { readiness: true });
+  // The same next step Today and the Inbox offer: those agents keep their Run visible.
+  const { step } = await resolveNextStep(ctx, { agents });
+  const featured = new Set(step.kind === "run_downstream" ? step.agents.map((x) => x.id) : step.kind === "run_pulse" ? [step.agent.id] : []);
   const canRun = can(ctx.role, "agents:run");
   const rows = agents.map((a) => ({ a, st: agentStatus(a) }));
+  const needs = (a: (typeof agents)[number]) => needsLine(a.readiness);
   // A column that is empty for every row says nothing: hide it.
   const showDrafts = rows.some((r) => r.st.drafts !== null);
   const showApproved = agents.some((a) => a.approval_rate !== null);
@@ -60,13 +66,18 @@ export default async function AgentsPage() {
                 <p className="mt-0.5 flex min-w-0 text-[13px] sm:hidden">
                   <AgentStatusText status={st} />
                 </p>
+                {needs(a) ? <p className="mt-0.5 truncate text-[13px] text-ink-3 sm:hidden" title={a.readiness?.reason ?? undefined}>{needs(a)}</p> : null}
               </div>
               <div role="cell" className="hidden min-w-0 text-[14px] sm:block">
                 <p className="flex min-w-0 items-center gap-1">
                   <AgentStatusText status={st} drafts={!showDrafts} />
                   {st.next ? <span className="shrink-0 truncate text-[13px] text-ink-3">· {st.next}</span> : null}
                 </p>
-                {st.kind === "ran" && a.last_run?.summary ? (
+                {needs(a) ? (
+                  <p className="truncate text-[13px] text-ink-3" title={a.readiness?.reason ?? undefined}>
+                    {needs(a)}
+                  </p>
+                ) : st.kind === "ran" && a.last_run?.summary ? (
                   <p className="truncate text-[13px] text-ink-3" title={a.last_run.summary}>
                     {a.last_run.summary}
                   </p>
@@ -83,8 +94,9 @@ export default async function AgentsPage() {
                 </span>
               ) : null}
               {canRun ? (
-                <span role="cell" className={cx("flex shrink-0 justify-end", st.kind !== "never" && reveal)}>
-                  <AgentRun agentId={a.id} readiness={a.readiness} label="Run" quiet />
+                <span role="cell" className={cx("flex shrink-0 justify-end", st.kind !== "never" && !featured.has(a.id) && reveal)}>
+                  {/* Run only when its readiness passes; otherwise the "Needs …" line in the row says why. */}
+                  {needs(a) ? null : <AgentRun agentId={a.id} readiness={a.readiness} label="Run" quiet />}
                 </span>
               ) : null}
             </div>
