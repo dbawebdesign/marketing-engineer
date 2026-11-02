@@ -105,7 +105,7 @@ body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; 
 /* Markdown (agent output, memory docs) */
 .prose-me { font-size: 15px; line-height: 1.65; color: var(--ink); }
 .prose-me h1 { font-size: 1.35rem; font-weight: 600; letter-spacing: -0.015em; margin: 0 0 .75rem; }
-.prose-me h2 { font-size: .8rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin: 1.75rem 0 .6rem; }
+.prose-me h2 { font-size: 1.0625rem; font-weight: 600; letter-spacing: -0.01em; color: var(--ink); margin: 2rem 0 .6rem; }
 .prose-me h3 { font-size: 1rem; font-weight: 600; margin: 1.25rem 0 .4rem; }
 .prose-me p { margin: .6rem 0; }
 .prose-me ul, .prose-me ol { margin: .4rem 0 .8rem; padding-left: 1.15rem; }

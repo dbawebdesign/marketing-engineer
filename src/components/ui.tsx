@@ -91,7 +91,7 @@ export function Section({ title, aside, children, className }: { title?: ReactNo
     <section className={cx("mb-10", className)}>
       {title ? (
         <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-[12px] font-semibold uppercase tracking-[0.07em] text-ink-3">{title}</h2>
+          <h2 className="text-[15px] font-semibold tracking-tight text-ink">{title}</h2>
           {aside}
         </div>
       ) : null}

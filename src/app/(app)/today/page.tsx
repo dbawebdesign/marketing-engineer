@@ -1,7 +1,7 @@
 import { ArrowRight, LoaderCircle, Radio } from "lucide-react";
 import type { ReactNode } from "react";
 import { requireCtx, currentSession } from "@/server/web/session";
-import { listDrafts } from "@/server/services/drafts";
+import { getDraft, listDrafts } from "@/server/services/drafts";
 import { listAgents, listRuns } from "@/server/services/agents";
 import { getDoc } from "@/server/services/memory";
 import { signalStats, SOURCE_LABEL } from "@/server/services/signals";
@@ -50,6 +50,8 @@ export default async function TodayPage() {
   const totalSignals = stats.reduce((a, b) => a + b.total, 0);
   const weekSignals = stats.reduce((a, b) => a + b.week, 0);
   const headline = headlineOf(truth?.content);
+  // When the newest memo is still waiting, preview its headline rather than a generic line.
+  const memoHeadline = !headline && state.pendingMemoId ? headlineOf((await getDraft(ctx, state.pendingMemoId).catch(() => null))?.body) : null;
   const first = s?.name?.split(" ")[0];
   const bySystem = (sys: string) => agents.find((a) => a.system === sys);
   const pulse = bySystem("customer_truth");
@@ -120,9 +122,9 @@ export default async function TodayPage() {
                 </L>
               ) : state.pendingMemoId ? (
                 <L href={`/inbox?d=${state.pendingMemoId}`} className="group mt-2 block">
-                  <p className="text-[22px] font-medium leading-snug tracking-[-0.015em] text-ink group-hover:text-ink/80">Your market memo is ready.</p>
+                  <p className="max-w-3xl text-[22px] font-medium leading-snug tracking-[-0.015em] text-ink text-pretty group-hover:text-ink/80">{memoHeadline ?? "Your market memo is ready."}</p>
                   <p className="mt-2 inline-flex items-center gap-1 text-sm text-ink-3 group-hover:text-ink-2">
-                    Review it to update the truth file <ArrowRight size={13} />
+                    {memoHeadline ? "New memo, waiting for you. Approve it to update the truth file" : "Review it to update the truth file"} <ArrowRight size={13} />
                   </p>
                 </L>
               ) : (

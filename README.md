@@ -12,8 +12,8 @@ It implements the six systems of the marketing engineer role:
 | Founder content | Content drafter | Posts in the founder's voice from real customer pain, plus asset ideas (calculators, landing lines) | Approved posts form the content library |
 | Outbound signals | Signal outreach | Trigger-based outreach (hiring, new branch, bad review, funding), ICP fit scores, first lines tied to the trigger | Approved messages ready to send |
 | Creative testing | Hook lab | 20 hooks across angles + 10 ad concepts for one offer | Starts an experiment with the variants |
-| AI search visibility | AI visibility | Answer-ready copy for the questions buyers ask AI assistants, grounded only in company facts, plus FAQPage JSON-LD and a list of missing facts | Answer pack ready to publish |
-| Growth cockpit | Weekly cockpit | The weekly eval: which angle drove clicks vs. demos and qualified replies, tests won, what to test next | Becomes the weekly brief |
+| AI search visibility | Answer builder | Answer-ready copy for the questions buyers ask AI assistants, grounded only in company facts, plus FAQPage JSON-LD and a list of missing facts | Answer pack ready to publish |
+| Growth cockpit | Weekly review | The weekly eval: which angle drove clicks vs. demos and qualified replies, tests won, what to test next | Becomes the weekly brief |
 
 ## The loop
 
@@ -57,7 +57,11 @@ It implements the six systems of the marketing engineer role:
 - Embed tokens: HS256 JWT signed by the host's server with a per-tenant secret (AES-256-GCM encrypted at rest), max 1h TTL, one-time `jti`, role capped at admin, optional origin allow-list.
 - Webhooks: HMAC-SHA256 over `timestamp.body`, 5-minute tolerance.
 - Agent output is rendered as Markdown with raw HTML disabled and link protocols restricted, because it derives from untrusted customer text. Prompts treat signals as data.
-- Audit log for every write (who, what, when) per tenant. Security headers and frame-ancestors on every response.
+- Embedded users never reach workspace administration (secrets, API keys, members, settings), whatever role the host grants. Embed start refuses top-level navigation; rotating the secret ends embed sessions.
+- Agent output never loads remote images, and a Content Security Policy limits every page to same-origin images, fonts and requests, so prompt-injected content cannot exfiltrate data. Untrusted signal text is escaped in prompts and treated as data.
+- Spend and fairness: schedules run at most hourly, a busy agent skips its slot, each workspace has a daily run budget (`ME_DAILY_RUN_LIMIT`, default 100) and a job concurrency cap (`ME_TENANT_CONCURRENCY`, default 2).
+- Rate limits key on the trusted proxy hop (`TRUSTED_PROXY_COUNT`, default 1), not the client-supplied X-Forwarded-For. Webhooks reject unsigned requests before reading the body.
+- Append-only audit log (the app role cannot update or delete it) for every write, secret reveal and rotation, and workspace change. Security headers and frame-ancestors on every response.
 
 See [docs/API.md](docs/API.md) for the REST API, webhooks and embedding.
 
