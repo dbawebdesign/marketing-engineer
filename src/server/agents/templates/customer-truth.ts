@@ -89,7 +89,7 @@ function offline(rc: RunContext): Out {
     recommended_test: {
       name: `Lead with "${top}"`,
       hypothesis: `If we lead with the buyer's own phrase "${top}", positive reply and demo rates beat our current generic angle.`,
-      angle: `Stop losing money to ${top}.`,
+      angle: `Open with "${top}": the words buyers used before they signed.`,
       channel: "outbound",
       metric: "Qualified positive replies",
       why_this_week: "It is the most repeated phrase in this window's signal.",

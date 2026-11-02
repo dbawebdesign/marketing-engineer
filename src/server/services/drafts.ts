@@ -90,7 +90,8 @@ async function applyApproval(tx: Tx, ctx: Ctx, d: Draft): Promise<string | null>
     case "market_memo": {
       await writeDocTx(tx, ctx, "customer-truth/what-the-market-is-telling-us", d.body, { note: `Approved: ${d.title}`, authorKind: "agent" });
       const t = d.payload.recommended_test as { name?: string; hypothesis?: string; channel?: string; metric?: string; angle?: string } | undefined;
-      if (t?.name) {
+      const dupe = t?.name ? await tx.query(`select 1 from experiments where lower(name) = lower($1) and status in ('draft','running')`, [t.name]) : null;
+      if (t?.name && !dupe?.rowCount) {
         await tx.query(
           `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, variants) values ($1,$2,$3,$4,$5,$6,$7)`,
           [ctx.tenantId, d.id, t.name.slice(0, 200), t.hypothesis ?? "", t.channel ?? "other", t.metric ?? "qualified_reply", JSON.stringify(t.angle ? [{ id: "a", label: t.angle }] : [])],
