@@ -2,6 +2,7 @@ import { sys, withTenant, type Tx } from "@/lib/db";
 import { assertCan, type Ctx } from "@/lib/ctx";
 import { badRequest, notFound } from "@/lib/errors";
 import { audit } from "./audit";
+import { INTRO_FIELDS, type IntroAnswers, type IntroName } from "@/lib/intro-fields";
 
 /** The Growth OS: the company's marketing memory, as versioned markdown documents in folders. */
 export const GROWTH_OS: { key: string; title: string; folder: string; hint: string }[] = [
@@ -121,4 +122,35 @@ export async function requireDoc(ctx: Ctx, key: string) {
   const d = await getDoc(ctx, key);
   if (!d) throw notFound("Document");
   return d;
+}
+
+export { INTRO_FIELDS, type IntroAnswers } from "@/lib/intro-fields";
+
+/** Which intro docs are still empty. */
+export async function introGaps(ctx: Ctx) {
+  assertCan(ctx, "read");
+  return withTenant(ctx.tenantId, async (tx) => {
+    const r = await tx.query<{ key: string }>(`select key from memory_docs where key = any($1) and length(trim(content)) > 0`, [INTRO_FIELDS.map((f) => f.key)]);
+    const filled = new Set(r.rows.map((x) => x.key));
+    return INTRO_FIELDS.filter((f) => !filled.has(f.key)).map((f) => f.name) as IntroName[];
+  });
+}
+
+/** Save intro answers as new versions of their docs. Only fills docs that are still empty. */
+export async function saveIntro(ctx: Ctx, answers: IntroAnswers) {
+  assertCan(ctx, "memory:write");
+  return withTenant(ctx.tenantId, async (tx) => {
+    let saved = 0;
+    for (const f of INTRO_FIELDS) {
+      const text = answers[f.name]?.trim();
+      if (!text) continue;
+      if (text.length > 20_000) throw badRequest(`"${f.label}" is too long (20k characters max)`);
+      const cur = await tx.query<{ content: string }>(`select content from memory_docs where key = $1`, [f.key]);
+      if (cur.rows[0]?.content.trim()) continue;
+      const content = f.name === "voice" ? `## Something I wrote\n\n${text}` : text;
+      await writeDocTx(tx, ctx, f.key, content, { note: "From the intro questions" });
+      saved++;
+    }
+    return { saved };
+  });
 }

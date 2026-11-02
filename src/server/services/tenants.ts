@@ -133,3 +133,16 @@ export async function listMembers(ctx: Ctx) {
   );
   return r.rows;
 }
+
+/** Small per-workspace flags kept in tenants.settings (e.g. whether the intro questions were answered or skipped). */
+export async function tenantFlags(ctx: Ctx): Promise<{ onboarded: boolean }> {
+  assertCan(ctx, "read");
+  const r = await sys<{ settings: Record<string, unknown> | null }>(`select settings from tenants where id = $1`, [ctx.tenantId]);
+  return { onboarded: r.rows[0]?.settings?.onboarded === true };
+}
+
+export async function markOnboarded(ctx: Ctx, how: "answered" | "skipped") {
+  assertCan(ctx, "memory:write");
+  await sys(`update tenants set settings = coalesce(settings, '{}'::jsonb) || jsonb_build_object('onboarded', true) where id = $1`, [ctx.tenantId]);
+  await withTenant(ctx.tenantId, (tx) => audit(tx, ctx, "onboarding.done", { type: "tenant", id: ctx.tenantId }, { how }));
+}

@@ -4,6 +4,7 @@ import { assertCan } from "@/lib/ctx";
 import { ingestSignals, type SignalInputT } from "./services/signals";
 import { writeDocTx } from "./services/memory";
 import { audit } from "./services/audit";
+import { SAMPLE_TAG } from "./services/sample";
 
 /**
  * Sample data: a vertical SaaS company ("Dispatchly") selling field-service software to
@@ -114,13 +115,24 @@ How can HVAC techs send quotes from the field?
 What software helps HVAC contractors increase equipment replacement sales?`,
 };
 
-export async function loadDemo(ctx: Ctx) {
+/**
+ * Load the sample. Every row is tagged sample (see services/sample.ts) so it can be told
+ * apart and cleared. Memory docs are only written for the dedicated demo workspace
+ * (`docs: true`, used by the seed script): a real workspace never gets Dispatchly's
+ * voice, ICP or facts in its memory, so agents run on the workspace's own (possibly empty) docs.
+ */
+export async function loadDemo(ctx: Ctx, opts: { docs?: boolean } = {}) {
   assertCan(ctx, "settings:manage");
-  const res = await ingestSignals(ctx, DEMO_SIGNALS);
+  const res = await ingestSignals(
+    ctx,
+    DEMO_SIGNALS.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}), ...SAMPLE_TAG } })),
+  );
   await withTenant(ctx.tenantId, async (tx) => {
-    for (const [key, content] of Object.entries(DEMO_DOCS)) {
-      const cur = await tx.query<{ content: string }>(`select content from memory_docs where key = $1`, [key]);
-      if (!cur.rows[0]?.content.trim()) await writeDocTx(tx, ctx, key, content, { note: "Sample data", authorKind: "system" });
+    if (opts.docs) {
+      for (const [key, content] of Object.entries(DEMO_DOCS)) {
+        const cur = await tx.query<{ content: string }>(`select content from memory_docs where key = $1`, [key]);
+        if (!cur.rows[0]?.content.trim()) await writeDocTx(tx, ctx, key, content, { note: "Sample data", authorKind: "system" });
+      }
     }
     // Two weeks of channel results so the cockpit has something to read.
     const angles = [
@@ -133,8 +145,8 @@ export async function loadDemo(ctx: Ctx) {
       for (const a of angles) {
         for (const [kind, n] of [["click", a.clicks], ["demo_request", a.demos], ["qualified_reply", a.replies]] as const) {
           for (let i = 0; i < n; i++) {
-            await tx.query(`insert into metric_events(tenant_id, kind, angle, source, occurred_at) values ($1,$2,$3,'sample', now() - make_interval(hours => $4))`, [
-              ctx.tenantId, kind, a.angle, Math.floor(Math.random() * 13 * 24),
+            await tx.query(`insert into metric_events(tenant_id, kind, angle, source, occurred_at, metadata) values ($1,$2,$3,'sample', now() - make_interval(hours => $4), $5)`, [
+              ctx.tenantId, kind, a.angle, Math.floor(Math.random() * 13 * 24), SAMPLE_TAG,
             ]);
           }
         }

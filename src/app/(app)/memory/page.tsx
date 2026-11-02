@@ -8,6 +8,7 @@ import { DocEditor } from "@/components/doc-editor";
 import { ChipScroller } from "@/components/chip-scroller";
 import { cx, timeAgo } from "@/components/ui";
 import { creditFor } from "@/lib/doc-credit";
+import { INTRO_FIELDS } from "@/lib/intro-fields";
 
 export const metadata = { title: "Memory" };
 
@@ -37,6 +38,9 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
   const emptyCount = yours.filter(isEmpty).length;
   const hasContent = !!doc?.content.trim();
   const title = doc?.title ?? preset?.title ?? current;
+  const canEdit = can(ctx.role, "memory:write");
+  const introField = INTRO_FIELDS.find((f) => f.key === current);
+  const introGaps = INTRO_FIELDS.filter((f) => isEmpty(f.key)).length;
 
   return (
     <div className="animate-in">
@@ -90,6 +94,14 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
           </div>
         </nav>
         <div className="min-w-0">
+          {introField && !hasContent && canEdit ? (
+            <p className="mb-4 rounded-xl bg-subtle px-4 py-3 text-[14px] text-ink-2">
+              Short on time? {introGaps > 1 ? `Answer ${introGaps} quick questions` : `Answer “${introField.label}”`} instead of writing the whole doc.{" "}
+              <L href="/today?setup=1" className="font-medium text-ink underline-offset-2 hover:underline">
+                Open on Today
+              </L>
+            </p>
+          ) : null}
           <DocEditor
             key={`${current}:${sp.edit === "1" ? "edit" : "view"}`}
             title={title}
@@ -101,7 +113,7 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
             hint={preset?.hint}
             template={DOC_TEMPLATES[current]}
             agentWritten={AGENT_WRITTEN.has(current)}
-            canEdit={can(ctx.role, "memory:write")}
+            canEdit={canEdit}
             preview={hasContent ? <Markdown>{doc!.content}</Markdown> : <p className="text-[14px] text-ink-3">{preset?.hint ?? "Empty."}</p>}
           />
           {history.length > 1 ? (
@@ -112,7 +124,7 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
                   <li key={h.version} className="flex gap-3 text-ink-2">
                     <span className="w-8 shrink-0 text-ink-3 tnum">v{h.version}</span>
                     <span className="min-w-0 flex-1 truncate">
-                      {h.author_kind === "agent" && h.note?.startsWith("Approved: ") ? h.note.slice(10) : h.author_kind === "system" ? (h.note === "Sample data" ? "Sample content" : "Created") : (h.note ?? "Edited")}
+                      {h.author_kind === "agent" && h.note?.startsWith("Approved: ") ? (current === "cockpit/weekly-brief" ? "Brief approved" : "Memo approved") : h.author_kind === "system" ? (h.note === "Sample data" ? "Sample content" : h.note && h.note !== "Created" ? h.note : "Created") : (h.note ?? "Edited")}
                     </span>
                     <span className="shrink-0 text-[13px] text-ink-3">
                       {creditFor(h)} · {timeAgo(h.created_at)}

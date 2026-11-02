@@ -28,7 +28,8 @@ if (existing.rowCount) {
 } else {
   const { userId, tenantId } = await signup({ name: "Maya Chen", email, password, company: "Dispatchly" });
   const ctx: Ctx = { tenantId, userId, role: "owner", actor: { type: "user", id: userId } };
-  const res = await loadDemo(ctx);
+  // The demo workspace IS the sample company, so it also gets the sample memory docs.
+  const res = await loadDemo(ctx, { docs: true });
   console.log(`Created ${email} / ${password}; ${res.inserted} sample signals.`);
   if (flags.has("--run")) {
     for (const a of await listAgents(ctx)) {

@@ -12,13 +12,17 @@ import { Kbd } from "@/components/ui";
 import { PaletteTrigger } from "@/components/palette-trigger";
 import { EmbedBridge } from "@/components/embed-bridge";
 import { Logo } from "@/components/logo";
+import { SampleBar } from "@/components/sample-bar";
+import { hasSampleData } from "@/server/services/sample";
+import { can } from "@/lib/rbac";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireCtx();
   const session = (await currentSession())!;
   if (!session.tenant) redirect("/login");
   const embed = await isEmbed();
-  const [tenants, inbox, agents] = await Promise.all([embed ? [] : userTenants(session.userId), pendingCount(ctx), listAgents(ctx)]);
+  const [tenants, inbox, agents, sample] = await Promise.all([embed ? [] : userTenants(session.userId), pendingCount(ctx), listAgents(ctx), hasSampleData(ctx)]);
+  const sampleBar = sample ? <SampleBar canClear={can(ctx.role, "settings:manage")} /> : null;
   const palette = <CommandPalette agents={agents.map((a) => ({ id: a.id, name: a.name }))} />;
 
   if (embed) {
@@ -34,6 +38,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
               </span>
             }
           />
+          {sampleBar}
           <main className="mx-auto max-w-5xl px-4 pb-[calc(88px+env(safe-area-inset-bottom))] pt-8 sm:px-6 md:pb-10">{children}</main>
         </div>
         {palette}
@@ -61,6 +66,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <div className="contents lg:hidden">
             <CompactNav inboxCount={inbox} workspace={<WorkspaceMenu compact current={{ id: session.tenant.id, name: session.tenant.name }} tenants={tenants} user={{ name: session.name, email: session.email }} />} />
           </div>
+          {sampleBar}
           <main className="mx-auto max-w-[1080px] px-4 pb-[calc(88px+env(safe-area-inset-bottom))] pt-8 sm:px-10 md:pb-10 lg:pt-10">{children}</main>
         </div>
       </div>

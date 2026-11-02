@@ -17,7 +17,7 @@ export default async function AgentsPage() {
   // A column that is empty for every row says nothing: hide it.
   const showDrafts = rows.some((r) => r.st.drafts !== null);
   const showApproved = agents.some((a) => a.approval_rate !== null);
-  const grid = { "--cols": ["minmax(0,1fr)", "180px", showDrafts && "64px", showApproved && "80px", canRun && "120px"].filter(Boolean).join(" ") } as React.CSSProperties;
+  const grid = { "--cols": ["minmax(180px,240px)", "minmax(0,1fr)", showDrafts && "64px", showApproved && "80px", canRun && "120px"].filter(Boolean).join(" ") } as React.CSSProperties;
   const cols = "sm:grid sm:items-center sm:gap-6 sm:grid-cols-[var(--cols)]";
   // Run shows on hover or focus where there's a pointer; touch screens, and agents that never ran, always show it.
   const reveal =
@@ -62,8 +62,15 @@ export default async function AgentsPage() {
                 </p>
               </div>
               <div role="cell" className="hidden min-w-0 text-[14px] sm:block">
-                <AgentStatusText status={st} drafts={!showDrafts} className="max-w-full" />
-                {st.next ? <p className="truncate text-[13px] text-ink-3">{st.next}</p> : null}
+                <p className="flex min-w-0 items-center gap-1">
+                  <AgentStatusText status={st} drafts={!showDrafts} />
+                  {st.next ? <span className="shrink-0 truncate text-[13px] text-ink-3">· {st.next}</span> : null}
+                </p>
+                {st.kind === "ran" && a.last_run?.summary ? (
+                  <p className="truncate text-[13px] text-ink-3" title={a.last_run.summary}>
+                    {a.last_run.summary}
+                  </p>
+                ) : null}
               </div>
               {showDrafts ? (
                 <span role="cell" className="hidden text-right text-[14px] tnum sm:block">

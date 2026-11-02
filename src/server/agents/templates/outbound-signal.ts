@@ -102,7 +102,6 @@ function pickAngle(angles: string[], want: RegExp) {
 function offline(rc: RunContext): Out {
   const icp = docText(rc, "outbound/icp");
   const angles = bullets(rc.docs["outbound/approved-angles"]);
-  const company = rc.tenantName;
   const proofSig = rc.signals.find((s) => s.source === "review" && /paid for|first month|same day/i.test(s.content));
   const proofQ = proofSig ? snippet(proofSig, /paid for|first month/i) : null;
   const where = proofSig ? (/g2/i.test(proofSig.title) ? "G2" : /capterra/i.test(proofSig.title) ? "Capterra" : "a review site") : "";
@@ -134,7 +133,7 @@ function offline(rc: RunContext): Out {
           first_line: `Saw the ${role ?? "job"} posting: "${q}"`,
           why_now: `They are hiring a ${role ?? "new role"} now, which means the office workflow is being rebuilt this month.`,
           angle: pickAngle(angles, /next quote/i),
-          middle: `A ${role ?? "new hire"} will fix the schedule. What still leaks${techs ? ` at ${techs} techs` : ""} is the step after the job: a tech spots a failing unit and the replacement quote never goes out. ${company} lets the tech start that quote from the truck, before leaving the site.`,
+          middle: `A ${role ?? "new hire"} will fix the schedule. What still leaks${techs ? ` at ${techs} techs` : ""} is the step after the job: a tech spots a failing unit and the replacement quote never goes out. We let the tech start that quote from the truck, before leaving the site.`,
           ask: `Worth 15 minutes before they start?`,
         };
         break;
@@ -144,7 +143,7 @@ function offline(rc: RunContext): Out {
           first_line: `Saw the expansion news: "${q}"`,
           why_now: "New branch and new techs: habits get set in the first months, before anyone writes them down.",
           angle: pickAngle(angles, /best tech/i),
-          middle: `New techs fix the job in front of them. What they don't do yet is what your veterans do: make sure the replacement quote goes out. ${company} lets every tech start it from the truck.`,
+          middle: `New techs fix the job in front of them. What they don't do yet is what your veterans do: make sure the replacement quote goes out. We let every tech start it from the truck.`,
           ask: "Open to a look before the new team starts?",
         };
         break;
@@ -154,7 +153,7 @@ function offline(rc: RunContext): Out {
           first_line: `A recent review of ${account} says: "${q}"`,
           why_now: "The review is public and recent; the fix is cheaper than the next lost replacement.",
           angle: pickAngle(angles, /lost replacement/i),
-          middle: `Not fun to read, but it's the most common way commercial shops lose replacement work: the tech does his part and the quote has nowhere to go. ${company} lets the tech send it from the truck, and the office sees every open quote.`,
+          middle: `Not fun to read, but it's the most common way commercial shops lose replacement work: the tech does his part and the quote has nowhere to go. We let the tech send it from the truck, and the office sees every open quote.`,
           ask: "Worth 15 minutes?",
         };
         break;
@@ -164,7 +163,7 @@ function offline(rc: RunContext): Out {
           first_line: `Read that you "${q.replace(/\.$/, "")}."`,
           why_now: "Fresh capital to roll up service companies: standard operating process gets chosen in the next two quarters.",
           angle: pickAngle(angles, /best tech/i),
-          middle: `Every shop you buy will have its own habit for the quote after a service call, usually "tell someone in the office." ${company} makes that step the same everywhere: the tech starts the quote from the truck, and you see every open one.`,
+          middle: `Every shop you buy will have its own habit for the quote after a service call, usually "tell someone in the office." We make that step the same everywhere: the tech starts the quote from the truck, and you see every open one.`,
           ask: "Worth a look before the next deal closes?",
         };
         break;
@@ -174,7 +173,7 @@ function offline(rc: RunContext): Out {
           first_line: `Saw this: "${q}"`,
           why_now: "Recent public change at the account.",
           angle: pickAngle(angles, /./),
-          middle: `Most commercial shops lose replacement work in the handoff between the truck and the office. ${company} lets the tech start the quote on site.`,
+          middle: `Most commercial shops lose replacement work in the handoff between the truck and the office. We let the tech start the quote on site.`,
           ask: "Worth 15 minutes?",
         };
     }
@@ -302,7 +301,7 @@ Write this run's outbound for ${rc.tenantName}.`,
     }
     const skippedTxt = [...badFit.map((a) => `${a.account} (fit ${a.fit_score})`), ...o.skipped.map((s) => `${s.account}: ${s.reason}`)];
     return {
-      summary: `${drafts.length} messages for accounts with fresh triggers${badFit.length ? `; ${badFit.length} dropped as bad fit` : ""}${blocked.length ? `; ${blocked.length} blocked for banned language` : ""}${skippedTxt.length ? `. Skipped: ${skippedTxt.join("; ")}` : ""}.`,
+      summary: `${drafts.length ? `${drafts.length} ${drafts.length === 1 ? "message" : "messages"} for accounts with fresh triggers` : "No messages this time"}${badFit.length ? `; ${badFit.length} dropped as bad fit` : ""}${blocked.length ? `; ${blocked.length} blocked for banned language` : ""}${skippedTxt.length ? `. Skipped: ${skippedTxt.join("; ")}` : ""}.`,
       stats: {
         trigger_accounts: unique.length,
         messages: drafts.length,

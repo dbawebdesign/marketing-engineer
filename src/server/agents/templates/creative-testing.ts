@@ -284,7 +284,7 @@ ${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_t
       ["Notes", o.notes],
     );
     return {
-      summary: `${nHooks} hooks and ${ads.length} ad concepts across ${angles.length} angles for "${o.offer.split(":")[0]}".`,
+      summary: `${nHooks} ${nHooks === 1 ? "hook" : "hooks"} and ${ads.length} ${ads.length === 1 ? "ad concept" : "ad concepts"} across ${angles.length} ${angles.length === 1 ? "angle" : "angles"} for "${o.offer.split(":")[0]}".`,
       stats: { angles: angles.length, hooks: nHooks, ads: ads.length, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
       drafts: [
         {

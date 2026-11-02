@@ -351,8 +351,11 @@ Write this week's posts for ${rc.tenantName}.`,
       });
     }
     const nPosts = drafts.filter((d) => d.type === "post").length;
+    const nAssets = drafts.length - nPosts;
+    const count = (k: number, one: string) => `${k} ${k === 1 ? one : `${one}s`}`;
+    const ready = drafts.length ? `${[nPosts ? count(nPosts, "post") : "", nAssets ? count(nAssets, "asset idea") : ""].filter(Boolean).join(" and ")} ready for review` : "Nothing ready for review";
     return {
-      summary: `${nPosts} posts ready for review${blocked.length ? `; ${blocked.length} blocked for banned language: ${blocked.join("; ")}` : ""}${posts.dropped ? `; ${posts.dropped} dropped for unverifiable receipts` : ""}.`,
+      summary: `${ready}${blocked.length ? `; ${blocked.length} blocked for banned language: ${blocked.join("; ")}` : ""}${posts.dropped ? `; ${posts.dropped} dropped for unverifiable receipts` : ""}.`,
       stats: {
         signals: rc.signals.length,
         posts: nPosts,

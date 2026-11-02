@@ -282,7 +282,7 @@ Paste into the page that carries these answers (${publishable.length} of ${qs.le
 ${JSON.stringify(jsonld, null, 2)}
 \`\`\``;
     return {
-      summary: `${counts.covered} of ${qs.length} buyer questions covered by our facts, ${counts.partial} partly, ${counts.missing} not at all${conflicts.kept.length ? `; ${conflicts.kept.length} fact(s) contradicted by signals` : ""}.`,
+      summary: `${counts.covered} of ${qs.length} buyer questions covered by our facts, ${counts.partial} partly, ${counts.missing} not at all${conflicts.kept.length ? `; ${conflicts.kept.length} ${conflicts.kept.length === 1 ? "fact" : "facts"} contradicted by signals` : ""}.`,
       stats: { questions: qs.length, ...counts, held_back_ungrounded: ungrounded, fact_conflicts: conflicts.kept.length, missing_facts: qs.reduce((n, q) => n + q.missing_facts.length, 0), unverified_quotes: unverified + conflicts.unverifiedQuotes },
       drafts: [
         {

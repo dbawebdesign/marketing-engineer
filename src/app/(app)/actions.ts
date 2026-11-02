@@ -6,7 +6,9 @@ import { act, requireCtx } from "@/server/web/session";
 import { ingestSignals, deleteSignal, SIGNAL_SOURCES, type SignalInputT } from "@/server/services/signals";
 import { runAgent, getRun, addRule, removeRule, updateAgent } from "@/server/services/agents";
 import { reviewDraft } from "@/server/services/drafts";
-import { saveDoc } from "@/server/services/memory";
+import { saveDoc, saveIntro, type IntroAnswers } from "@/server/services/memory";
+import { clearSampleData } from "@/server/services/sample";
+import { markOnboarded } from "@/server/services/tenants";
 import { loadDemo } from "@/server/demo";
 import { drain } from "@/server/worker-core";
 import { switchTenant } from "@/lib/auth";
@@ -128,6 +130,35 @@ export async function loadDemoAction() {
     const r = await loadDemo(ctx);
     revalidatePath("/", "layout");
     return r;
+  });
+}
+
+export async function clearSampleAction() {
+  return act(async () => {
+    const ctx = await requireCtx();
+    const r = await clearSampleData(ctx);
+    revalidatePath("/", "layout");
+    return r;
+  });
+}
+
+export async function saveIntroAction(answers: IntroAnswers) {
+  return act(async () => {
+    const ctx = await requireCtx();
+    const clean: IntroAnswers = { sell: String(answers?.sell ?? ""), buyers: String(answers?.buyers ?? ""), voice: String(answers?.voice ?? "") };
+    if (!Object.values(clean).some((v) => v?.trim())) throw badRequest("Answer at least one, or skip for now");
+    const r = await saveIntro(ctx, clean);
+    await markOnboarded(ctx, "answered");
+    revalidatePath("/", "layout");
+    return r;
+  });
+}
+
+export async function skipIntroAction() {
+  return act(async () => {
+    const ctx = await requireCtx();
+    await markOnboarded(ctx, "skipped");
+    revalidatePath("/today");
   });
 }
 

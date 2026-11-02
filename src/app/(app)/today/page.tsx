@@ -1,9 +1,11 @@
 import { ArrowRight, LoaderCircle, Radio } from "lucide-react";
 import type { ReactNode } from "react";
 import { requireCtx, currentSession } from "@/server/web/session";
-import { getDraft, listDrafts } from "@/server/services/drafts";
+import { getDraft, listDrafts, pendingCount } from "@/server/services/drafts";
 import { listAgents, listRuns } from "@/server/services/agents";
-import { getDoc } from "@/server/services/memory";
+import { getDoc, introGaps } from "@/server/services/memory";
+import { tenantFlags } from "@/server/services/tenants";
+import { IntroStep } from "@/components/intro-step";
 import { signalStats, SOURCE_LABEL } from "@/server/services/signals";
 import { todayState } from "@/server/services/review-extra";
 import { SYSTEM_META, type System } from "@/server/agents/types";
@@ -38,11 +40,17 @@ function Heading({ children, aside, strong }: { children: ReactNode; aside?: Rea
   );
 }
 
-export default async function TodayPage() {
+const REVIEW_ROWS = 5;
+
+export default async function TodayPage({ searchParams }: { searchParams: Promise<{ setup?: string }> }) {
   const ctx = await requireCtx();
   const s = await currentSession();
-  const [pending, agents, stats, truth, runs, state] = await Promise.all([
-    listDrafts(ctx, { status: "pending", limit: 5 }),
+  const sp = await searchParams;
+  const [pendingRows, pendingTotal, gaps, flags, agents, stats, truth, runs, state] = await Promise.all([
+    listDrafts(ctx, { status: "pending", limit: REVIEW_ROWS + 1 }),
+    pendingCount(ctx),
+    introGaps(ctx),
+    tenantFlags(ctx),
     listAgents(ctx),
     signalStats(ctx),
     getDoc(ctx, "customer-truth/what-the-market-is-telling-us"),
@@ -64,17 +72,31 @@ export default async function TodayPage() {
   const firstRun = !state.finishedRun;
   const canRun = can(ctx.role, "agents:run");
   const showNext = state.finishedRun && state.approvedMemo && state.contentDrafts === 0 && (content || outbound);
+  // The headline already points at the pending memo: don't list it again below.
+  const memoInHeadline = !firstRun && !headline && state.pendingMemoId ? state.pendingMemoId : null;
+  const reviewable = pendingRows.filter((d) => d.id !== memoInHeadline);
+  const pending = reviewable.slice(0, REVIEW_ROWS);
+  const moreInInbox = pendingTotal - (memoInHeadline ? 1 : 0) - pending.length;
+  // Until the first memo is approved, the next action is that memo: the rail shows status only.
+  const railRuns = canRun && state.approvedMemo;
+  const canWriteMemory = can(ctx.role, "memory:write");
+  // Keep the page (and the agent rail) in step with any run still going, wherever it was started.
+  const recent = (t: string) => Date.now() - new Date(t).getTime() < 30 * 60_000;
+  const liveRefresh = state.active.length > 0 || agents.some((a) => a.last_run && (a.last_run.status === "running" || a.last_run.status === "queued") && recent(a.last_run.created_at));
+  const askIntro = canWriteMemory && gaps.length > 0 && (sp.setup === "1" || (totalSignals === 0 && !flags.onboarded && gaps.length === 3));
 
   return (
     <div className="animate-in">
-      {state.active.length ? <LiveRefresh /> : null}
+      {liveRefresh ? <LiveRefresh /> : null}
       <p className="text-sm text-ink-3">{new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" })}</p>
       <h1 className="mt-1 text-[28px] font-semibold tracking-[-0.02em]">
         {greeting()}
         {first ? `, ${first}` : ""}.
       </h1>
 
-      {totalSignals === 0 ? (
+      {askIntro ? (
+        <IntroStep ask={gaps} canSkip={sp.setup !== "1"} />
+      ) : totalSignals === 0 ? (
         <section className="mt-10 rounded-2xl bg-surface p-6 shadow-soft ring-1 ring-line sm:p-8">
           <h2 className="text-lg font-semibold tracking-tight">Start with what customers are already saying</h2>
           <p className="mt-1 max-w-xl text-ink-2">
@@ -157,7 +179,7 @@ export default async function TodayPage() {
               <section>
                 <Heading
                   strong
-                  aside={pending.length ? <L href="/inbox" className="text-sm text-ink-2 hover:text-ink">Open inbox</L> : null}
+                  aside={pendingTotal ? <L href="/inbox" className="text-sm text-ink-2 hover:text-ink">Open inbox</L> : null}
                 >
                   Needs your review
                 </Heading>
@@ -191,10 +213,23 @@ export default async function TodayPage() {
                         </li>
                       );
                     })}
+                    {moreInInbox > 0 ? (
+                      <li>
+                        <L href="/inbox" className="flex items-center gap-3 px-4 py-3 text-sm text-ink-2 transition-colors hover:bg-subtle hover:text-ink">
+                          <span className="w-1.5 shrink-0" aria-hidden />
+                          <span className="flex-1">+{moreInInbox} more in your inbox</span>
+                          <ArrowRight size={15} className="shrink-0 text-ink-3" />
+                        </L>
+                      </li>
+                    ) : null}
                   </ul>
                 ) : (
-                  <Empty title={firstRun ? "Nothing to review yet" : "You're all caught up"}>
-                    {firstRun ? "Your first memo lands here when Market pulse finishes." : "New drafts from your agents show up here for approval."}
+                  <Empty title={firstRun ? "Nothing to review yet" : memoInHeadline ? "Nothing else waiting" : "You're all caught up"}>
+                    {firstRun
+                      ? "Your first memo lands here when Market pulse finishes."
+                      : memoInHeadline
+                        ? "Start with the memo above. Once it's approved, the other agents build on it."
+                        : "New drafts from your agents show up here for approval."}
                   </Empty>
                 )}
               </section>
@@ -216,6 +251,15 @@ export default async function TodayPage() {
                         </li>
                       );
                     })}
+                    {moreInInbox > 0 ? (
+                      <li>
+                        <L href="/inbox" className="flex items-center gap-3 px-4 py-3 text-sm text-ink-2 transition-colors hover:bg-subtle hover:text-ink">
+                          <span className="w-1.5 shrink-0" aria-hidden />
+                          <span className="flex-1">+{moreInInbox} more in your inbox</span>
+                          <ArrowRight size={15} className="shrink-0 text-ink-3" />
+                        </L>
+                      </li>
+                    ) : null}
                   </ul>
                 </section>
               ) : null}
@@ -236,7 +280,7 @@ export default async function TodayPage() {
                             {st.next && st.kind !== "never" ? <span className="truncate text-ink-3">· {st.next}</span> : null}
                           </span>
                         </L>
-                        {st.kind === "never" && canRun ? <RunButton agentId={a.id} label="Run" size="sm" variant="ghost" className="mr-1 shrink-0" /> : null}
+                        {st.kind === "never" && railRuns ? <RunButton agentId={a.id} label="Run" size="sm" variant="ghost" className="mr-1 shrink-0" /> : null}
                       </li>
                     );
                   })}
