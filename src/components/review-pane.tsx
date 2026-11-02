@@ -163,7 +163,7 @@ export function ReviewPane({ draft, nextId, reasons = [] }: { draft: ReviewDraft
       )}
 
       {editable ? (
-        <div className="sticky bottom-0 -mx-1 mt-5 border-t border-line bg-bg/90 px-1 py-4 backdrop-blur">
+        <div className="sticky bottom-[calc(57px+env(safe-area-inset-bottom))] md:bottom-0 -mx-1 mt-5 border-t border-line bg-bg/90 px-1 py-4 backdrop-blur">
           {mode === "reject" ? (
             <div className="space-y-3">
               <label htmlFor="reject-reason" className="block text-[13px] font-medium text-ink-2">

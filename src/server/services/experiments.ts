@@ -24,12 +24,13 @@ export async function listExperiments(ctx: Ctx, limit = 20) {
   });
 }
 
-export async function angleMetrics(ctx: Ctx, days = 14) {
+/** Metric totals per angle over the last `days` days. Untagged events are left out. */
+export async function angleMetrics(ctx: Ctx, days = 7) {
   assertCan(ctx, "read");
   return withTenant(ctx.tenantId, async (tx) => {
     const r = await tx.query<{ angle: string; kind: string; v: number }>(
-      `select coalesce(angle, '(none)') angle, kind, sum(value)::float v from metric_events
-        where occurred_at > now() - make_interval(days => $1) group by 1, 2`,
+      `select angle, kind, sum(value)::float v from metric_events
+        where occurred_at > now() - make_interval(days => $1) and nullif(trim(angle), '') is not null group by 1, 2`,
       [days],
     );
     const by = new Map<string, Record<string, number>>();

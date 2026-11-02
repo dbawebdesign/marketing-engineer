@@ -1,8 +1,8 @@
 import { requireCtx } from "@/server/web/session";
 import { listMembers, tenantSettings } from "@/server/services/tenants";
 import { listApiKeys } from "@/lib/apikeys";
-import { aiEnabled, MODELS } from "@/lib/ai/provider";
-import { can } from "@/lib/rbac";
+import { aiEnabled } from "@/lib/ai/provider";
+import { canDo } from "@/lib/ctx";
 import { ApiKeys, EmbedPanel, WorkspaceForm } from "@/components/settings-panels";
 import { Badge, Dot, PageHeader, Section } from "@/components/ui";
 
@@ -10,7 +10,7 @@ export const metadata = { title: "Settings" };
 
 export default async function SettingsPage() {
   const ctx = await requireCtx();
-  const admin = can(ctx.role, "settings:manage");
+  const admin = canDo(ctx, "settings:manage");
   const [t, members, keys] = await Promise.all([tenantSettings(ctx), listMembers(ctx), admin ? listApiKeys(ctx) : []]);
   const appUrl = process.env.APP_URL ?? "http://localhost:3000";
   const ai = aiEnabled();
@@ -26,38 +26,45 @@ export default async function SettingsPage() {
     <div className="animate-in">
       <PageHeader title="Settings" />
       <Section>
+        {admin ? (
+          <div className={row}>
+            {head("Workspace", "Name and where it can be embedded.")}
+            <WorkspaceForm name={t.name} origins={t.allowed_origins} canManage={admin} />
+          </div>
+        ) : null}
         <div className={row}>
-          {head("Workspace", "Name and where it can be embedded.")}
-          <WorkspaceForm name={t.name} origins={t.allowed_origins} canManage={admin} />
-        </div>
-        <div className={row}>
-          {head("Intelligence", "The models your agents use.")}
-          <div className="text-sm">
-            <p className="flex items-center gap-2">
+          {head("Intelligence", "What powers your agents.")}
+          <div className="text-[14px]">
+            <p className="flex items-center gap-2 font-medium text-ink">
               <Dot tone={ai ? "accent" : "warn"} />
-              {ai ? "Claude is connected." : "Running on the offline engine (no Claude API key on this server)."}
+              {ai ? "Claude is connected" : "Agents are running in offline mode"}
             </p>
-            <p className="mt-2 text-ink-2">
-              Deep work (truth synthesis, AI search, cockpit): <code className="font-mono text-[13px]">{MODELS.deep}</code>. Fast drafting (content, outbound, creative): <code className="font-mono text-[13px]">{MODELS.fast}</code>.
+            <p className="mt-1.5 max-w-xl text-ink-2">
+              {ai
+                ? "Customer truth, AI search and the Growth cockpit use Claude's deepest model for judgment. Drafting agents use a faster one."
+                : "Ask your administrator to connect Claude for full-quality output. Offline mode still checks every receipt."}
             </p>
-            {!ai ? <p className="mt-2 text-ink-3">Set ANTHROPIC_API_KEY on the server for judgment-quality synthesis. The offline engine still verifies every receipt.</p> : null}
           </div>
         </div>
-        <div className={row}>
-          {head("People", "Who can see and approve work here.")}
-          <ul className="divide-y divide-line overflow-hidden rounded-xl bg-surface ring-1 ring-line">
-            {members.map((m) => (
-              <li key={m.id} className="flex items-center gap-3 px-4 py-3 text-sm">
-                <span className="grid size-7 place-items-center rounded-full bg-subtle text-xs font-semibold text-ink-2">{(m.name || m.email).slice(0, 1).toUpperCase()}</span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">{m.name || m.email}</p>
-                  <p className="truncate text-xs text-ink-3">{m.external ? "Via embed" : m.email}</p>
-                </div>
-                <Badge>{m.role}</Badge>
-              </li>
-            ))}
-          </ul>
-        </div>
+        {members.length ? (
+          <div className={row}>
+            {head("People", "Who can see and approve work here.")}
+            <ul className="divide-y divide-line overflow-hidden rounded-xl bg-surface ring-1 ring-line">
+              {members.map((m) => (
+                <li key={m.id} className="flex items-center gap-3 px-4 py-3 text-sm">
+                  <span className="grid size-7 place-items-center rounded-full bg-subtle text-xs font-semibold text-ink-2">
+                    {(m.name || m.email).slice(0, 1).toUpperCase()}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">{m.name || m.email}</p>
+                    <p className="truncate text-xs text-ink-3">{m.external ? "Via embed" : m.email}</p>
+                  </div>
+                  <Badge>{m.role}</Badge>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         {admin ? (
           <>
             <div className={row}>

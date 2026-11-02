@@ -4,13 +4,14 @@ import { currentSession, isEmbed, requireCtx } from "@/server/web/session";
 import { userTenants } from "@/server/services/tenants";
 import { pendingCount } from "@/server/services/drafts";
 import { listAgents } from "@/server/services/agents";
-import { BaseProvider, SidebarNav, TopNav } from "@/components/nav";
+import { BaseProvider, CompactNav, SidebarNav } from "@/components/nav";
 import { WorkspaceMenu } from "@/components/workspace-menu";
 import { CommandPalette } from "@/components/palette";
 import { Toaster } from "@/components/toast";
 import { Kbd } from "@/components/ui";
 import { PaletteTrigger } from "@/components/palette-trigger";
 import { EmbedBridge } from "@/components/embed-bridge";
+import { Logo } from "@/components/logo";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireCtx();
@@ -24,10 +25,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     return (
       <BaseProvider base="/embed">
         <div className="min-h-dvh">
-          <div className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur">
-            <TopNav inboxCount={inbox} />
-          </div>
-          <main className="mx-auto max-w-5xl px-5 py-8">{children}</main>
+          <CompactNav
+            inboxCount={inbox}
+            workspace={
+              <span className="flex h-10 min-w-0 items-center gap-2.5 px-2">
+                <Logo />
+                <span className="truncate text-[14px] font-semibold tracking-tight">{session.tenant.name}</span>
+              </span>
+            }
+          />
+          <main className="mx-auto max-w-5xl px-4 pb-[calc(88px+env(safe-area-inset-bottom))] pt-8 sm:px-6 md:pb-10">{children}</main>
         </div>
         {palette}
         <Toaster />
@@ -51,10 +58,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           </div>
         </aside>
         <div className="min-w-0 flex-1">
-          <div className="sticky top-0 z-20 border-b border-line bg-bg/85 backdrop-blur lg:hidden">
-            <TopNav inboxCount={inbox} />
+          <div className="contents lg:hidden">
+            <CompactNav inboxCount={inbox} workspace={<WorkspaceMenu compact current={{ id: session.tenant.id, name: session.tenant.name }} tenants={tenants} user={{ name: session.name, email: session.email }} />} />
           </div>
-          <main className="mx-auto max-w-[1080px] px-5 py-10 sm:px-10">{children}</main>
+          <main className="mx-auto max-w-[1080px] px-4 pb-[calc(88px+env(safe-area-inset-bottom))] pt-8 sm:px-10 md:pb-10 lg:pt-10">{children}</main>
         </div>
       </div>
       {palette}
