@@ -80,6 +80,14 @@ Or `docker compose up --build` for Postgres + web + worker.
 
 Set `ANTHROPIC_API_KEY` to run agents on Claude. `ME_MODEL_DEEP` / `ME_MODEL_FAST` override the models.
 
+## Operate it
+
+- **Processes.** `web` serves the UI and API; `worker` runs the scheduler and agent jobs (scale it horizontally). In production the web process does not run jobs inline unless `ME_INLINE_WORKER=true`.
+- **Runs.** Each run has a deadline (`ME_RUN_DEADLINE_MS`, default 8 minutes). Temporary failures retry with backoff up to the job's attempt limit; refusals and invalid output fail immediately. On SIGTERM the worker stops in-flight model calls and returns their jobs to the queue.
+- **Database.** Pools fail fast (5s connect, 15s statements, 30s idle-in-transaction) and are PgBouncer transaction-mode safe. The worker sweeps finished jobs (7 days), expired sessions and used embed tokens.
+- **Health.** `GET /api/health` for web; the worker writes a heartbeat file checked by its container healthcheck.
+- **Data rights.** `GET /api/v1/workspace/export` exports a workspace; `scripts/delete-tenant.ts` erases one.
+
 ## Embed it
 
 ```html

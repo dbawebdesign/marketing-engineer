@@ -175,3 +175,9 @@ A full example is in `examples/embed-host/`. Run `node mint-token.mjs --serve` f
 - When allowed origins are set, `/embed/start` checks the signed `origin` claim. If the browser sends `Referer`, its origin must match. If it sends `Sec-Fetch-Dest`, the value must be `iframe`.
 - The `frame-ancestors` CSP comes from the deployment's `ME_EMBED_FRAME_ANCESTORS`. It defaults to `*` in development and `'self'` in production.
 - The SDK only accepts `postMessage` events that come from `baseUrl`'s origin and from its own iframe.
+
+## Workspace export
+
+`GET /api/v1/workspace/export` (admin scope) returns everything the workspace owns as one JSON document: signals, memory and its version history, agents and rules, runs, drafts, experiments, metric events, the audit log and the member list. Secrets and credential hashes are never included.
+
+Permanent deletion is an operator action: `pnpm tsx scripts/delete-tenant.ts <slug> --yes` removes the workspace's data in batches, then the workspace, then any users (including embed users) who belonged only to it.
