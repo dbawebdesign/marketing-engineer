@@ -1,11 +1,11 @@
 import { z } from "zod";
 import { handler, intParam, readJson } from "@/lib/api";
 import { badRequest } from "@/lib/errors";
-import { ingestSignals, listSignals, SIGNAL_SOURCES, type SignalInputT } from "@/server/services/signals";
+import { encodeCursor, ingestSignals, listSignals, SIGNAL_SOURCES, type SignalInputT } from "@/server/services/signals";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/v1/signals?source=&q=&limit=&before= */
+/** GET /api/v1/signals?source=&q=&limit=&cursor=  (next page: pass next_cursor; `before` still accepted) */
 export const GET = handler(async (req, ctx) => {
   const sp = req.nextUrl.searchParams;
   const source = sp.get("source");
@@ -17,16 +17,22 @@ export const GET = handler(async (req, ctx) => {
     q: sp.get("q") ?? undefined,
     limit: intParam(sp.get("limit"), 50, 1, 200),
     before: before ? new Date(before).toISOString() : undefined,
+    cursor: sp.get("cursor") ?? undefined,
   });
   const last = data.at(-1);
-  return { data, next_before: data.length && last ? new Date(last.occurred_at).toISOString() : null };
+  const full = data.length === intParam(sp.get("limit"), 50, 1, 200);
+  return {
+    data,
+    next_cursor: full && last ? encodeCursor(last) : null,
+    next_before: data.length && last ? new Date(last.occurred_at).toISOString() : null,
+  };
 });
 
 const Body = z.union([z.object({ signals: z.array(z.record(z.string(), z.unknown())) }), z.record(z.string(), z.unknown())]);
 
 /** POST /api/v1/signals  — one signal object, or { signals: [...] } (max 1,000). */
 export const POST = handler(async (req, ctx) => {
-  const body = await readJson(req, Body, 20_000_000);
+  const body = await readJson(req, Body, 10_000_000);
   const list = Array.isArray((body as { signals?: unknown }).signals) ? (body as { signals: unknown[] }).signals : [body];
   if (list.length > 1000) throw badRequest("Send at most 1,000 signals per request");
   const res = await ingestSignals(ctx, list as SignalInputT[]);

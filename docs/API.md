@@ -52,7 +52,7 @@ Token buckets, shared across instances when `REDIS_URL` is set:
 
 ### Signals
 
-`GET /signals?source=&q=&limit=50&before=<ISO time>` returns `{ data: Signal[], next_before }`. To get the next page, pass `next_before` back as `before`.
+`GET /signals?source=&q=&limit=50&cursor=` returns `{ data: Signal[], next_cursor }`, newest first. To get the next page, pass `next_cursor` back as `cursor` (`null` means the last page). The cursor encodes the time and id, so signals sharing a timestamp are never skipped. The older `before=<ISO time>` / `next_before` pair still works. `q` searches title, account and content (the 1,000 most recent matches).
 
 `POST /signals` takes one signal, or `{ "signals": [...] }` with up to 1,000. It is idempotent on `(source, normalized content)`, so a repeat counts as a duplicate. Returns `201 { received, inserted, duplicates, ids }`.
 

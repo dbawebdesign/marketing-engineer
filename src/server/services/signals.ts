@@ -51,40 +51,69 @@ export async function ingestSignals(ctx: Ctx, raw: SignalInputT[]) {
   });
   if (JSON.stringify(parsed.map((p) => p.metadata)).length > 2_000_000) throw badRequest("Metadata too large");
   return withTenant(ctx.tenantId, async (tx) => {
-    let inserted = 0;
-    const ids: string[] = [];
-    for (const s of parsed) {
-      const hash = sha256(`${s.source}\n${s.content.replace(/\s+/g, " ").trim().toLowerCase()}`);
-      const r = await tx.query<{ id: string }>(
-        `insert into signals(tenant_id, source, title, content, url, author, account, occurred_at, metadata, content_hash)
-         values ($1,$2,$3,$4,$5,$6,$7,coalesce($8, now()),$9,$10)
-         on conflict (tenant_id, content_hash) do nothing returning id`,
-        [ctx.tenantId, s.source, s.title, s.content, s.url ?? null, s.author ?? null, s.account ?? null, s.occurred_at ?? null, s.metadata, hash],
-      );
-      if (r.rows[0]) {
-        inserted++;
-        ids.push(r.rows[0].id);
-      }
-    }
+    // One statement for the whole batch. Rows without a time get now() minus their position in
+    // milliseconds, so a batch keeps its order and pages cleanly by (occurred_at, id).
+    const rows = parsed.map((s, i) => ({
+      source: s.source,
+      title: s.title,
+      content: s.content,
+      url: s.url ?? null,
+      author: s.author ?? null,
+      account: s.account ?? null,
+      occurred_at: s.occurred_at ?? null,
+      ord: i,
+      metadata: s.metadata,
+      content_hash: sha256(`${s.source}\n${s.content.replace(/\s+/g, " ").trim().toLowerCase()}`),
+    }));
+    const r = await tx.query<{ id: string }>(
+      `insert into signals(tenant_id, source, title, content, url, author, account, occurred_at, metadata, content_hash)
+       select $1, x.source, x.title, x.content, x.url, x.author, x.account,
+              coalesce(x.occurred_at, now() - make_interval(secs => x.ord / 1000.0)), coalesce(x.metadata, '{}'::jsonb), x.content_hash
+         from jsonb_to_recordset($2::jsonb) as x(source text, title text, content text, url text, author text, account text,
+                                                occurred_at timestamptz, ord int, metadata jsonb, content_hash text)
+       on conflict (tenant_id, content_hash) do nothing
+       returning id`,
+      [ctx.tenantId, JSON.stringify(rows)],
+    );
+    const ids = r.rows.map((x) => x.id);
+    const inserted = ids.length;
     await audit(tx, ctx, "signals.ingest", undefined, { received: parsed.length, inserted });
     return { received: parsed.length, inserted, duplicates: parsed.length - inserted, ids };
   });
 }
 
-export async function listSignals(ctx: Ctx, opts: { source?: string; q?: string; limit?: number; before?: string } = {}) {
+/**
+ * Newest first. Page with `cursor` (opaque, from the previous page's `next_cursor`): it encodes
+ * (occurred_at, id), so rows sharing a timestamp are never skipped. `before` (a timestamp) is
+ * kept for older clients. Text search uses the trigram index (most recent 1,000 matches).
+ */
+export async function listSignals(ctx: Ctx, opts: { source?: string; q?: string; limit?: number; before?: string; cursor?: string } = {}) {
   assertCan(ctx, "read");
   const limit = Math.min(Math.max(opts.limit ?? 50, 1), 200);
+  const cur = decodeCursor(opts.cursor);
   return withTenant(ctx.tenantId, async (tx) => {
     const r = await tx.query<Signal>(
       `select id, source, title, content, url, author, account, occurred_at, metadata from signals
         where ($1::text is null or source = $1)
-          and ($2::text is null or content ilike '%' || $2 || '%' or title ilike '%' || $2 || '%' or account ilike '%' || $2 || '%')
+          and ($2::text is null or id in (select id from search_signal_ids('%' || $2 || '%', 1000)))
           and ($3::timestamptz is null or occurred_at < $3)
-        order by occurred_at desc limit $4`,
-      [opts.source || null, opts.q ? opts.q.replace(/[%_\\]/g, (m) => "\\" + m).slice(0, 200) : null, opts.before ?? null, limit],
+          and ($5::timestamptz is null or (occurred_at, id) < ($5, $6::uuid))
+        order by occurred_at desc, id desc limit $4`,
+      [opts.source || null, opts.q ? opts.q.replace(/[%_\\]/g, (m) => "\\" + m).slice(0, 200) : null, opts.before ?? null, limit, cur?.t ?? null, cur?.id ?? null],
     );
     return r.rows;
   });
+}
+
+export function encodeCursor(s: { occurred_at: string | Date; id: string }) {
+  return Buffer.from(`${new Date(s.occurred_at).toISOString()}|${s.id}`).toString("base64url");
+}
+
+function decodeCursor(c?: string): { t: string; id: string } | null {
+  if (!c) return null;
+  const [t, id] = Buffer.from(c, "base64url").toString().split("|");
+  if (!t || !id || Number.isNaN(Date.parse(t)) || !/^[0-9a-f-]{36}$/i.test(id)) throw badRequest("Invalid cursor");
+  return { t, id };
 }
 
 export async function signalStats(ctx: Ctx) {
