@@ -5,7 +5,7 @@ import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "
 import { keepSupported } from "../evidence";
 import { clip, sentences, tokens, topPhrases } from "../text";
 import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf, words } from "./guardrails";
-import { draftTitle, fromSignals, meta, shippable } from "../format";
+import { countBySource, draftTitle, fromSignals, meta, shippable } from "../format";
 
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
@@ -64,6 +64,16 @@ function voiceLine(rc: RunContext, about: string): string | null {
   return scored[0] && scored[0].s > 0 ? scored[0].l : null;
 }
 
+const MONEY = /\$\s?\d[\d,]{2,}/;
+const OWN_WORDS = /\bwe (know|just|can't|cannot|lose|need)\b|\bour\b.*\b(leak|biggest)\b/i;
+
+/** A signal the offline writer can build a post from on its own: a dollar figure, a churn story, or a buyer's own words. */
+export function postable(s: SignalLite) {
+  if (s.source === "churn_note") return true;
+  if (findSentence(s, MONEY)) return true;
+  return ["crm_note", "review", "social", "survey"].includes(s.source) && !s.metadata?.trigger && Boolean(findSentence(s, OWN_WORDS));
+}
+
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
   const posts: Post[] = [];
@@ -98,7 +108,7 @@ function offline(rc: RunContext): Out {
   // 2. A number from the field: the most expensive miss anyone told us about.
   const money = sigs
     .filter((s) => !used.has(s.id))
-    .map((s) => ({ s, q: findSentence(s, /\$\s?\d[\d,]{2,}/) }))
+    .map((s) => ({ s, q: findSentence(s, MONEY) }))
     .filter((x): x is { s: SignalLite; q: string } => Boolean(x.q))
     .sort((a, b) => Number(/\d[\d,]+/.exec(b.q)![0].replace(/,/g, "")) - Number(/\d[\d,]+/.exec(a.q)![0].replace(/,/g, "")))[0];
   if (money) {
@@ -113,8 +123,9 @@ function offline(rc: RunContext): Out {
       body: [
         `${retell(money.q, money.s)}`,
         after.map((a) => retell(a, money.s)).join(" "),
-        `The tech did his job: he spotted it. The quote just had nowhere to go. That gap between the truck and the office is where replacement revenue disappears, and it never shows up on a report.`,
-        vl ? `I keep coming back to this: ${vl}` : `If the follow-up depends on someone remembering, it depends on luck.`,
+        // This paragraph is about a quote that never went out; only say it when the note says so.
+        followUp ? `The tech did his job: he spotted it. The quote just had nowhere to go. That gap between the truck and the office is where replacement revenue disappears, and it never shows up on a report.` : null,
+        vl ? `I keep coming back to this: ${vl}` : followUp ? `If the follow-up depends on someone remembering, it depends on luck.` : null,
         `How does your shop make sure the quote actually goes out?`,
       ]
         .filter(Boolean)
@@ -129,7 +140,7 @@ function offline(rc: RunContext): Out {
   // 3. The buyer's own words, from an inbound form, review or thread.
   const own = sigs
     .filter((s) => !used.has(s.id) && ["crm_note", "review", "social", "survey"].includes(s.source) && !s.metadata?.trigger)
-    .map((s) => ({ s, q: findSentence(s, /\bwe (know|just|can't|cannot|lose|need)\b|\bour\b.*\b(leak|biggest)\b/i) }))
+    .map((s) => ({ s, q: findSentence(s, OWN_WORDS) }))
     .find((x): x is { s: SignalLite; q: string } => Boolean(x.q));
   if (own) {
     const said = bare(own.q).replace(/^We\b/, "we");
@@ -246,6 +257,11 @@ export const founderContent: AgentTemplate<typeof Schema> = {
   tier: "fast",
   defaultCron: "0 8 * * 2",
   reads: READS,
+  readiness: {
+    usable: postable,
+    usableOfflineOnly: true,
+    usableNoun: "it can build a post from (a dollar figure, a churn reason, or a buyer's own words such as \"we lose\" or \"we need\")",
+  },
   spec: {
     mission: "Turn real customer pain into founder posts people in the industry would forward, in the founder's voice, every week.",
     dataSources: ["Customer truth file", "Sales calls", "Support tickets", "Churn notes", "Reviews", "Social threads", "Founder voice doc", "Winning hooks"],
@@ -354,7 +370,22 @@ Write this week's posts for ${rc.tenantName}.`,
     const nAssets = drafts.length - nPosts;
     const count = (k: number, one: string) => `${k} ${k === 1 ? one : `${one}s`}`;
     const ready = drafts.length ? `${[nPosts ? count(nPosts, "post") : "", nAssets ? count(nAssets, "asset idea") : ""].filter(Boolean).join(" and ")} ready for review` : "Nothing ready for review";
+    if (!drafts.length) {
+      const why = [
+        blocked.length ? `${blocked.length} blocked for banned language: ${blocked.join("; ")}` : null,
+        posts.dropped + assets.dropped ? `${posts.dropped + assets.dropped} dropped because their quotes didn't match the signals` : null,
+      ].filter(Boolean);
+      return {
+        substantive: false,
+        summary: why.length
+          ? `No posts this time: ${why.join("; ")}.`
+          : `No posts this time: ${countBySource(rc.signals)}, none with a dollar figure, a churn reason, a buyer's own words or a public question to build a post on. Add churn notes, reviews or call notes with numbers.`,
+        stats: { signals: rc.signals.length, posts: 0, asset_ideas: 0, banned_blocked: blocked.length, dropped_unverified: posts.dropped + assets.dropped, unverified_quotes: posts.unverifiedQuotes + assets.unverifiedQuotes, x_over_length: 0 },
+        drafts: [],
+      };
+    }
     return {
+      substantive: true,
       summary: `${ready}${blocked.length ? `; ${blocked.length} blocked for banned language: ${blocked.join("; ")}` : ""}${posts.dropped ? `; ${posts.dropped} dropped for unverifiable receipts` : ""}.`,
       stats: {
         signals: rc.signals.length,

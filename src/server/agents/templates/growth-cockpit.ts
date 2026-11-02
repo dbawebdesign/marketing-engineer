@@ -165,8 +165,10 @@ function offline(rc: RunContext): Out {
   const ap = m?.approvals ?? [];
   const pend = ap.reduce((n, a) => n + a.pending, 0);
   if (ap.length) {
-    const worst = [...ap].sort((a, b) => b.pending - a.pending)[0]!;
-    what_changed.push({ point: `Review queue: ${ap.reduce((n, a) => n + a.approved, 0)} drafts approved, ${ap.reduce((n, a) => n + a.rejected, 0)} rejected, ${pend} waiting${worst.pending ? ` (most in ${worst.system.replace(/_/g, " ")}: ${worst.pending})` : ""}.`, evidence: [] });
+    const [worst, second] = [...ap].sort((a, b) => b.pending - a.pending);
+    // Name the busiest system only when it really has the most waiting.
+    const most = worst && worst.pending > (second?.pending ?? 0) && worst.pending > 1;
+    what_changed.push({ point: `Review queue: ${ap.reduce((n, a) => n + a.approved, 0)} drafts approved, ${ap.reduce((n, a) => n + a.rejected, 0)} rejected, ${pend} waiting${most ? ` (most in ${worst.system.replace(/_/g, " ")}: ${worst.pending})` : ""}.`, evidence: [] });
   }
 
   // Repeated objection.
@@ -197,7 +199,7 @@ function offline(rc: RunContext): Out {
     const pretty = pain.phrase.replace(/\bfollow up\b/, "follow-up");
     getting_louder.push({
       topic: `"${pretty}"`,
-      detail: `${hit.length} signals mention it; ${recent} of them in the last ${Math.ceil(rc.spec.lookbackDays / 2)} days vs ${hit.length - recent} in the days before.${recent > hit.length - recent ? " Rising." : " Steady."}`,
+      detail: `${hit.length} ${hit.length === 1 ? "signal mentions" : "signals mention"} it; ${recent} of them in the last ${Math.ceil(rc.spec.lookbackDays / 2)} days vs ${hit.length - recent} in the days before.${recent > hit.length - recent ? " Rising." : " Steady."}`,
       evidence: hit.slice(0, 2).flatMap((s) => {
         const q = sentences(s.content).find((x) => words.every((w) => x.toLowerCase().includes(w)));
         return q ? [{ signal_id: s.id, quote: q }] : [];
@@ -211,7 +213,7 @@ function offline(rc: RunContext): Out {
   if (comp.length) {
     getting_louder.push({
       topic: "Competitors",
-      detail: `${comp.length} signals name a competitor or cheaper alternative: ${comp.map((c) => `${c.s.source.replace("_", " ")}${c.s.outcome ? ` (${c.s.outcome})` : ""}`).join(", ")}.`,
+      detail: `${comp.length} ${comp.length === 1 ? "signal names" : "signals name"} a competitor or cheaper alternative: ${comp.map((c) => `${c.s.source.replace("_", " ")}${c.s.outcome ? ` (${c.s.outcome})` : ""}`).join(", ")}.`,
       evidence: comp.slice(0, 3).map((c) => ({ signal_id: c.s.id, quote: c.q })),
     });
   }
@@ -382,18 +384,26 @@ ${o.angle_read}
 ${table}
 
 ## Tests
-${o.tests_read}
-
-## The objection that keeps coming back
-${objection && objection.count ? `**${objection.objection}** (${objection.count} signals). ${objection.so_what}` : "Nothing repeated enough to call out this week."}
-
-## Getting louder
-${louder.kept.map((l) => `- **${l.topic}**: ${l.detail}`).join("\n") || "- Nothing clearly rising this week."}
-
-## Test next
-${o.next_tests.map((t, i) => `${i + 1}. **${t.name}**. ${t.hypothesis}  \n   Angle: ${t.angle} · Decided by: ${t.metric.replace(/_/g, " ")} · Why: ${t.why}`).join("\n")}`;
+${o.tests_read}${objection && objection.count ? `\n\n## The objection that keeps coming back\n**${objection.objection}** (${objection.count} signals). ${objection.so_what}` : ""}${
+      louder.kept.length ? `\n\n## Getting louder\n${louder.kept.map((l) => `- **${l.topic}**: ${l.detail}`).join("\n")}` : ""
+    }${
+      o.next_tests.length
+        ? `\n\n## Test next\n${o.next_tests.map((t, i) => `${i + 1}. **${t.name}**. ${t.hypothesis}  \n   Angle: ${t.angle} · Decided by: ${t.metric.replace(/_/g, " ")} · Why: ${t.why}`).join("\n")}`
+        : ""
+    }`;
     const evidence = [...changed.flatMap((c) => c.evidence), ...objEv, ...louder.kept.flatMap((l) => l.evidence)];
+    // A weekly read needs results to read: with no metric events or tests it would be a page of "nothing recorded".
+    const hasResults = Object.keys(m?.totals ?? {}).length > 0 || rows.length > 0 || (m?.experiments.length ?? 0) > 0;
+    if (!hasResults) {
+      return {
+        substantive: false,
+        summary: `No brief this time: no results (clicks, demo requests, replies) or tests in the last ${rc.spec.lookbackDays} days. Send metric events tagged by angle, then run it.`,
+        stats: { signals: rc.signals.length, angles: 0, experiments: 0, next_tests: 0, untraced_numbers: 0, dropped_claims: droppedClaims, unverified_quotes: unverified },
+        drafts: [],
+      };
+    }
     return {
+      substantive: true,
       summary: o.headline,
       stats: {
         signals: rc.signals.length,

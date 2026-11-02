@@ -160,21 +160,30 @@ export function AgentRun({
   );
 }
 
+/** "Run Content drafter and Hook lab": the label names exactly the agents the button starts. */
+export function runAllLabel(names: string[]) {
+  return `Run ${names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`}`;
+}
+
 /**
  * Starts several agents at once (e.g. everything downstream of a newly approved memo).
+ * Only agents that are ready (or already working) are started; an agent marked not ready is left out.
  * The page's live refresh shows each one working, and their drafts as they land.
  */
 export function RunAllButton({
-  agents,
+  agents: all,
   label,
   className,
 }: {
-  agents: { id: string; activeRunId?: string | null }[];
-  label: string;
+  agents: { id: string; name?: string; ready?: boolean; activeRunId?: string | null }[];
+  /** Defaults to naming the agents it will start. */
+  label?: string;
   className?: string;
 }) {
   const [pending, start] = useTransition();
   const router = useRouter();
+  const agents = all.filter((a) => a.ready !== false || a.activeRunId);
+  if (!label) label = runAllLabel(agents.map((a) => a.name ?? "agent"));
   const going = agents.some((a) => a.activeRunId);
   const busy = pending || going;
   return (

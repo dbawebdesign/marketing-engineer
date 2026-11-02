@@ -30,6 +30,29 @@ const SOURCE_NOUN: Record<string, [string, string]> = {
   other: ["note", "notes"],
 };
 
+const nounFor = (src: string, k: number) => {
+  const [one, many] = SOURCE_NOUN[src] ?? [src.replace(/_/g, " "), `${src.replace(/_/g, " ")}s`];
+  return k === 1 ? one : many;
+};
+
+/** "a, b and c" */
+export function listJoin(xs: string[]) {
+  return xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`;
+}
+
+/** "social posts, reviews, CRM notes and other notes", or "all your signals" for an agent that reads every source. */
+export function sourceList(sources: string[] | null | undefined) {
+  if (!sources?.length) return "all your signals";
+  return listJoin(sources.map((s) => (s === "other" ? "other notes" : nounFor(s, 2))));
+}
+
+/** "5 sales calls, 1 review": a set of signals by source, largest first. */
+export function countBySource(signals: { source: string }[]) {
+  const by = new Map<string, number>();
+  for (const s of signals) by.set(s.source, (by.get(s.source) ?? 0) + 1);
+  return listJoin([...by.entries()].sort((a, b) => b[1] - a[1]).map(([src, k]) => `${k} ${nounFor(src, k)}`));
+}
+
 /** "3 sales calls, 1 review": the distinct signals a draft rests on, by source. */
 export function fromSignals(evidence: { signal_id: string; source?: string }[] | undefined, signals?: Map<string, SignalLite>): string {
   const bySource = new Map<string, Set<string>>();

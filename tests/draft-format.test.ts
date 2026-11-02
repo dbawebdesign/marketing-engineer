@@ -50,6 +50,7 @@ describe("offline drafts", () => {
       };
       const r = t.finalize(t.offline(rc) as never, rc);
       expect(r.drafts.length).toBeGreaterThan(0);
+      expect(r.substantive).toBe(true);
       for (const d of r.drafts) {
         expect(d.body).not.toMatch(/\n---\n|^---$/m);
         expect(d.body).not.toMatch(/\*\*(Platform|Came from|Angle|Fit [0-9]|Offer|Hypothesis|Channel):?\*\*/);

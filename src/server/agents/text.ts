@@ -57,3 +57,19 @@ export function bestSentence(text: string, phrase: string): string | null {
 export function clip(s: string, n: number) {
   return s.length <= n ? s : s.slice(0, n - 1).trimEnd() + "…";
 }
+
+const WON = /\b(closed[- ]won|signed (the|our) (contract|deal|order)|they signed|(he|she) signed|signed today|became a customer|went with us|chose us|picked us|converted to paid)\b/i;
+// Case-sensitive on purpose: a capitalised word after "went with" is a competitor's name.
+const LOST = /\b([Ww]ent with|[Cc]hose|[Pp]icked|[Ss]igned with) (a|an|another|the other|[A-Z][\w-]+)\b/;
+
+/**
+ * A deal outcome stated in a sales or CRM note, for notes pasted without metadata.
+ * Only explicit wording counts ("they signed", "went with a cheaper tool"); anything else stays unknown.
+ */
+export function inferOutcome(source: string, content: string): "won" | "lost" | null {
+  if (source !== "sales_call" && source !== "crm_note") return null;
+  const lost = LOST.test(content) || /\b(closed[- ]lost|lost the deal|lost (it|them|the deal) to|passed on us|not moving forward|decided against us)\b/i.test(content);
+  const won = WON.test(content);
+  if (won === lost) return null;
+  return won ? "won" : "lost";
+}

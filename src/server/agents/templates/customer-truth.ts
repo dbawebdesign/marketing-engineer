@@ -2,8 +2,9 @@ import { z } from "zod";
 import type { AgentTemplate, RunContext } from "../types";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { dedupeEvidence, keepSupported, type VerifiedEvidence } from "../evidence";
-import { meta, onePerItem, shortDate } from "../format";
+import { countBySource, listJoin, meta, onePerItem, shortDate } from "../format";
 import { bestSentence, sentences, tokens, topPhrases } from "../text";
+import { PULSE_MIN } from "../readiness";
 
 const Ev = z.object({ signal_id: z.string(), quote: z.string() });
 
@@ -60,7 +61,27 @@ function sharpen(p: { phrase: string; docs: number }, docs: string[]) {
   return best && best.docs >= Math.ceil(p.docs * 0.6) ? best : p;
 }
 
-const listJoin = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+/** Distinct voices behind a set of signals: one per named account, one per unnamed signal. */
+const voices = (sigs: { id: string; account: string | null }[]) => new Set(sigs.map((s) => (s.account ? `a:${s.account.trim().toLowerCase()}` : `s:${s.id}`))).size;
+
+/** A recommended test that is only a placeholder ("collect more signal") must never become an experiment. */
+export function isRealTest(t: { name?: string; angle?: string } | null | undefined) {
+  const name = t?.name?.trim() ?? "";
+  return Boolean(name && t?.angle?.trim() && !/^(collect|gather|get|add) more\b|\bmore (signal|signals|data|notes)\b|not enough/i.test(name));
+}
+
+/**
+ * Why a window produced no memo, in terms of what the person can see and change:
+ * "5 sales calls, all about Brightline Plumbing and none with a deal outcome. Add notes from deals you won or lost, or calls with other companies."
+ */
+export function nothingToSay(sigs: { id: string; source: string; account: string | null; outcome?: string | null }[]) {
+  const withOutcome = sigs.filter((s) => s.outcome === "won" || s.outcome === "lost").length;
+  const accounts = [...new Set(sigs.map((s) => s.account?.trim()).filter(Boolean))] as string[];
+  const oneAccount = accounts.length === 1 && sigs.every((s) => s.account?.trim());
+  const facts = [oneAccount ? `all about ${accounts[0]}` : null, withOutcome ? null : "none with a deal outcome"].filter(Boolean);
+  const asks = [withOutcome ? null : "notes from deals you won or lost", oneAccount ? "notes from other companies" : "more calls, tickets or reviews"].filter(Boolean) as string[];
+  return `Not enough to say what changed yet: ${countBySource(sigs)}${facts.length ? `, ${facts.join(" and ")}` : ""}. Add ${asks.join(", or ")}.`;
+}
 
 function whyFor(sources: string[]): string {
   const has = (k: string) => sources.includes(k);
@@ -93,7 +114,8 @@ function offline(rc: RunContext): Out {
   if (won.length >= 2 && lost.length >= 1) {
     const lostTokens = new Set(lost.flatMap((s) => tokens(s.content)));
     const wonP = topPhrases(won.map((s) => s.content), 10, 2).find((p) => !p.phrase.split(" ").every((w) => lostTokens.has(w)));
-    const lostP = topPhrases(lost.map((s) => s.content), 4, Math.min(2, lost.length))[0];
+    // One lost deal has no repeated phrase, only its own words; don't dress a random trigram up as a pattern.
+    const lostP = lost.length >= 2 ? topPhrases(lost.map((s) => s.content), 4, 2)[0] : undefined;
     if (wonP) {
       const sharp = sharpen(wonP, won.map((s) => s.content));
       winning = surface(sharp.phrase, won.map((s) => s.content));
@@ -103,7 +125,7 @@ function offline(rc: RunContext): Out {
         ? `Deals we won talked about ${winning}. Deals we lost talked about ${lostWords}.`
         : `Deals we won kept coming back to ${winning}.`;
       changes.push({
-        claim: `${ws.length} of ${won.length} won deals brought up ${winning}; none of the ${lost.length} lost deals did.`,
+        claim: `${ws.length} of ${won.length} won deals brought up ${winning}; ${lost.length === 1 ? "the one lost deal didn't" : `none of the ${lost.length} lost deals did`}.`,
         why_it_matters: lostWords ? `Buyers often open with ${lostWords}, but that isn't what closes. Lead with what closes.` : "Lead with what closes.",
         strength: ws.length >= 3 ? "strong" : "emerging",
         count: ws.length,
@@ -121,7 +143,8 @@ function offline(rc: RunContext): Out {
     if (winning && (winning.includes(words) || words.includes(winning))) continue;
     if (p.phrase.split(" ").every((w) => seen.has(w))) continue;
     const hits = hitsFor(p.phrase);
-    if (hits.length < 2) continue;
+    // One company repeating itself across five calls is one voice, not a market signal.
+    if (hits.length < 2 || voices(hits) < 2) continue;
     const sources = [...new Set(hits.map((h) => h.source))];
     changes.push({
       claim: `“${words}” came up in ${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}.`,
@@ -139,14 +162,15 @@ function offline(rc: RunContext): Out {
     const sentence = sentences(s.content).find((x) => OBJECTION.test(x));
     if (!sentence || objections.length >= 4) continue;
     const kind = sentence.match(OBJECTION)![0].toLowerCase();
+    // Labels name the kind of pushback only; the quote under each says the specifics.
     const label = /price|pricing|cost|expensive|cheaper|budget|per-tech|justify/.test(kind)
-      ? "Price, especially per-tech pricing for small shops"
-      : /left for|competitor|bundles|cheaper/.test(kind)
-        ? "A competitor offered more in one bundle"
+      ? "Price"
+      : /left for|competitor|bundles/.test(kind)
+        ? "Lost to a competitor or a bundle"
         : /confusing|buried|took longer/.test(kind)
-          ? "Setup friction: inviting the office team is hard to find"
+          ? "Setup is confusing or slow"
           : /built for bigger/.test(kind)
-            ? "Feels built for bigger commercial shops"
+            ? "Feels built for bigger companies"
             : "Not urgent enough to switch now";
     const existing = objections.find((o) => o.objection === label);
     if (existing) {
@@ -155,9 +179,11 @@ function offline(rc: RunContext): Out {
     } else objections.push({ objection: label, count: 1, evidence: [{ signal_id: s.id, quote: sentence }] });
   }
 
-  const angle = winning ?? (phrases[0] ? surface(phrases[0].phrase, texts) : null);
+  // The test leads with what closed, or with the phrase behind the top change; never with a phrase that didn't make the memo.
+  const topChange = changes[0] ? /“([^”]+)”/.exec(changes[0].claim)?.[1] ?? null : null;
+  const angle = winning ?? topChange;
   return {
-    headline: headline ?? (changes[0] ? changes[0].claim : "Not enough signal this window to say what changed."),
+    headline: headline ?? (changes[0] ? changes[0].claim : ""),
     changes,
     language: phrases.slice(0, 5).map((p) => {
       const words = surface(p.phrase, texts);
@@ -174,7 +200,7 @@ function offline(rc: RunContext): Out {
           metric: "Qualified positive replies",
           why_this_week: winning ? "It's what the deals we won had in common." : "It's the most repeated phrase this week.",
         }
-      : { name: "Collect more signal", hypothesis: "We need more customer notes before testing.", angle: "", channel: "other", metric: "Signals collected", why_this_week: "Too few signals this window." },
+      : { name: "", hypothesis: "", angle: "", channel: "other", metric: "", why_this_week: "" },
     confidence_note: won.length + lost.length ? `Deal outcome known for ${won.length} won and ${lost.length} lost` : "No deal outcomes recorded yet",
   };
 }
@@ -196,11 +222,11 @@ function md(o: Kept) {
   const words = o.language.filter((l) => !claims.includes(l.phrase.toLowerCase())).slice(0, 5);
   const t = o.recommended_test;
   return [
-    `**${o.headline}**`,
-    `## What changed\n${changes.map((c, i) => `- **${c.claim.replace(/\.$/, "")}.** ${c.why_it_matters}${receipt(cq[i]!)}`).join("\n")}`,
+    o.headline.trim() ? `**${o.headline}**` : null,
+    changes.length ? `## What changed\n${changes.map((c, i) => `- **${c.claim.replace(/\.$/, "")}.** ${c.why_it_matters}${receipt(cq[i]!)}`).join("\n")}` : null,
     words.length ? `## Their words\n${words.map((l) => `"${l.phrase}" (${l.note.replace(/ mentions?$/, "")})`).join(" · ")}` : null,
     objections.length ? `## Objections\n${objections.map((x, i) => `- **${x.objection}** (${x.count})${receipt(oq[i]!)}`).join("\n")}` : null,
-    t.angle ? `## Test this week\n**${t.name}.** ${t.hypothesis} Run it on ${t.channel.replace("_", " ")}; decided by ${t.metric.toLowerCase()}.` : null,
+    isRealTest(t) ? `## Test this week\n**${t.name}.** ${t.hypothesis} Run it on ${t.channel.replace("_", " ")}; decided by ${t.metric.toLowerCase()}.` : null,
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -214,6 +240,7 @@ export const customerTruth: AgentTemplate<typeof Schema> = {
   tier: "deep",
   defaultCron: "0 7 * * 1-5",
   reads: ["customer-truth/what-the-market-is-telling-us", "outbound/icp"],
+  readiness: { min: PULSE_MIN },
   spec: {
     mission: "Pull every customer signal into one place and show what changed, with receipts.",
     dataSources: ["Sales call notes", "Support tickets", "Churn notes", "CRM notes", "Reviews", "Social mentions", "Product events"],
@@ -253,22 +280,27 @@ Write this week's "What the market is telling us" for ${rc.tenantName}.`,
     const dropped = changes.dropped + objections.dropped;
     const evidence = dedupeEvidence([...changes.kept, ...objections.kept].flatMap((c) => c.evidence));
     const date = shortDate(rc.now);
+    // A memo is worth reviewing only when at least one change survived verification.
+    const substantive = changes.kept.length > 0;
+    const headline = substantive && o.headline.trim() ? o.headline : (changes.kept[0]?.claim ?? "");
+    const test = isRealTest(o.recommended_test) ? o.recommended_test : null;
     return {
-      summary: o.headline,
+      substantive,
+      summary: substantive ? headline : nothingToSay(rc.signals),
       stats: {
         signals: rc.signals.length,
         claims: changes.kept.length + objections.kept.length,
         dropped_claims: dropped,
         unverified_quotes: changes.unverifiedQuotes + objections.unverifiedQuotes + language.unverifiedQuotes,
       },
-      drafts: [
+      drafts: !substantive ? [] : [
         {
           type: "market_memo",
           title: `What the market is telling us · ${date}`,
-          body: md(cleaned),
+          body: md({ ...cleaned, headline, recommended_test: test ?? cleaned.recommended_test }),
           payload: {
-            headline: o.headline,
-            recommended_test: o.recommended_test,
+            headline,
+            recommended_test: test,
             language: cleaned.language.map((l) => l.phrase),
             meta: meta(
               ["Signals", `${rc.signals.length} in the last ${rc.spec.lookbackDays} days`],

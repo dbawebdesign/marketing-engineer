@@ -3,7 +3,18 @@
  * Pure, so Today can render it and tests can pin the priority order.
  */
 
-export type StepAgent = { id: string; name: string; ready: boolean; signals: number; neverRun: boolean; activeRunId: string | null };
+import { PULSE_MIN } from "@/server/agents/readiness";
+
+export type StepAgent = {
+  id: string;
+  name: string;
+  ready: boolean;
+  signals: number;
+  neverRun: boolean;
+  activeRunId: string | null;
+  /** Signals the agent needs (from its readiness); defaults to Market pulse's minimum. */
+  need?: number;
+};
 export type StepExperiment = {
   id: string;
   name: string;
@@ -46,17 +57,18 @@ export type NextStep =
 
 export function nextStep(s: NextStepInput): NextStep {
   if (s.introGaps > 0) return { kind: "intro" };
-  if (s.totalSignals === 0) return { kind: "add_signals", signals: 0, need: 3, days: null };
+  if (s.totalSignals === 0) return { kind: "add_signals", signals: 0, need: s.pulse?.need ?? PULSE_MIN, days: null };
 
   const memoExists = s.approvedMemo || !!s.pendingMemoId;
   if (!memoExists && s.pulse && s.can.run) {
     // Market pulse can't draft from a thin window: more signals first, unless it's already going.
-    if (!s.pulse.ready && !s.pulse.activeRunId) return { kind: "add_signals", signals: s.pulse.signals, need: 3, days: 7 };
+    if (!s.pulse.ready && !s.pulse.activeRunId) return { kind: "add_signals", signals: s.pulse.signals, need: s.pulse.need ?? PULSE_MIN, days: 7 };
     return { kind: "run_pulse", agent: s.pulse };
   }
   if (s.pendingMemoId && s.can.review) return { kind: "review_memo", draftId: s.pendingMemoId };
 
-  const idle = s.downstream.filter((a) => a.neverRun || a.activeRunId);
+  // Offer only agents that would find something to draft (or are already working): the button names exactly these.
+  const idle = s.downstream.filter((a) => a.activeRunId || (a.neverRun && a.ready));
   // Stay on this step while those first runs are still going and nothing has landed yet.
   const stillGoing = idle.some((a) => a.activeRunId) && s.pendingDrafts === 0;
   if (s.approvedMemo && s.can.run && (idle.some((a) => a.neverRun) || stillGoing)) return { kind: "run_downstream", agents: idle };

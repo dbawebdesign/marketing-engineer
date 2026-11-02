@@ -4,7 +4,7 @@ import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported, normalize } from "../evidence";
 import { bullets, docText, findBanned, parseBanned, renderBanned, techsOf, words } from "./guardrails";
-import { draftTitle, meta, shippable } from "../format";
+import { draftTitle, listJoin, meta, shippable } from "../format";
 
 const TRIGGER_LABEL: Record<string, string> = { hiring: "Hiring", new_location: "New location", bad_review: "Bad review", funding: "Funding", leadership_change: "New leader", tech_change: "Tool change", other: "Trigger" };
 
@@ -95,9 +95,36 @@ function fit(s: SignalLite, trigger: Trigger, icp: string) {
   return { score: Math.max(0, Math.min(100, score)), reasons: reasons.join("; ") };
 }
 
-function pickAngle(angles: string[], want: RegExp) {
-  return angles.find((a) => want.test(a)) ?? angles[0] ?? "Lost replacement revenue after the service call";
+/** Trigger wording in a pasted post or note, for signals that arrive without trigger metadata. */
+const INFER: [Trigger, RegExp][] = [
+  ["hiring", /\b(we're hiring|we are hiring|is hiring|now hiring|hiring (a|an|two|three|\d+)\b|job (posting|opening))/i],
+  ["new_location", /\b(new (branch|location|office|warehouse)|opening (a|our|its) (new |second |third )?(branch|location|office)|expanding (to|into))\b/i],
+  ["funding", /\b(raised \$|raises \$|series [a-d]\b|seed round|funding round|acquired by|acquires|acquisition of)/i],
+  ["leadership_change", /\b(joins as|appointed|named (the )?new|new (ceo|coo|cfo|vp|head of|director|general manager|gm|operations manager))\b/i],
+  ["tech_change", /\b(switching (from|to)|migrating (from|to)|replacing (our|their))\b/i],
+];
+
+/** The trigger behind a signal: from its metadata, or plainly stated in a post, note or review. Null when there is none. */
+export function triggerOf(s: Pick<SignalLite, "source" | "content" | "title" | "metadata">): Trigger | null {
+  const m = s.metadata?.trigger;
+  if (typeof m === "string" && m) return (TRIGGERS as readonly string[]).includes(m) ? (m as Trigger) : "other";
+  if (!["social", "crm_note", "review", "other"].includes(s.source)) return null;
+  for (const [t, re] of INFER) if (re.test(s.content)) return t;
+  if (s.source === "review" && /\b[12] stars?\b|★{1,2}(?!★)/i.test(`${s.title} ${s.content}`)) return "bad_review";
+  return null;
 }
+
+/** The approved angle that fits this trigger, and whether it matched (rather than falling back to the first angle). */
+function pickAngle(angles: string[], want: RegExp) {
+  const hit = angles.find((a) => want.test(a));
+  return { angle: hit ?? angles[0] ?? null, themed: Boolean(hit) };
+}
+
+/** An approved angle, as a sentence the email can carry. */
+const asLine = (a: string) => {
+  const t = a.replace(/^["“]|["”]$/g, "").replace(/\s*[:–-]\s*$/, "").trim();
+  return /[.!?]$/.test(t) ? t : `${t}.`;
+};
 
 function offline(rc: RunContext): Out {
   const icp = docText(rc, "outbound/icp");
@@ -110,7 +137,7 @@ function offline(rc: RunContext): Out {
   const byAccount = new Map<string, SignalLite>();
   const skipped: Out["skipped"] = [];
   for (const s of rc.signals) {
-    if (typeof s.metadata?.trigger !== "string") continue;
+    if (!triggerOf(s)) continue;
     if (!s.account) {
       skipped.push({ account: s.title || "(unknown)", reason: "Trigger event with no account attached." });
       continue;
@@ -120,19 +147,36 @@ function offline(rc: RunContext): Out {
 
   const accounts: Acct[] = [];
   for (const [account, s] of byAccount) {
-    const trigger = (TRIGGERS as readonly string[]).includes(s.metadata!.trigger as string) ? (s.metadata!.trigger as Trigger) : "other";
+    const trigger = triggerOf(s) ?? "other";
     const { score, reasons } = fit(s, trigger, icp);
     const q = snippet(s, KW[trigger]) ?? snippet(s, /hiring|announc|raised/i) ?? snippet(s, /./)!;
     const techs = techsOf(s);
     const role = (s.metadata?.role as string | undefined)?.toLowerCase();
     let a: Pick<Acct, "subject" | "first_line" | "why_now" | "angle"> & { middle: string; ask: string };
-    switch (trigger) {
+    // The worded pitches below describe one product (follow-up quotes from the truck). Use them only when an
+    // approved angle says the same thing; otherwise the email carries the approved angle itself.
+    const pick = pickAngle(angles, trigger === "hiring" ? /next quote/i : trigger === "new_location" || trigger === "funding" ? /best tech/i : trigger === "bad_review" ? /lost replacement/i : /$^/);
+    if (!pick.angle) {
+      skipped.push({ account, reason: "No approved angle to pitch yet. Add one to Approved angles and run again." });
+      continue;
+    }
+    const generic = {
+      hiring: { subject: `your new ${role ?? "hire"}`, first_line: `Saw the ${role ?? "job"} posting: "${q}"`, why_now: `They are hiring a ${role ?? "new role"} now, so how the team works is being set this month.`, ask: "Worth 15 minutes before they start?" },
+      new_location: { subject: "the new location", first_line: `Saw the expansion news: "${q}"`, why_now: "A new location sets new habits in its first months, before anyone writes them down.", ask: "Open to a look before the new team starts?" },
+      bad_review: { subject: "that recent review", first_line: `A recent review of ${account} says: "${q}"`, why_now: "The review is public and recent.", ask: "Worth 15 minutes?" },
+      funding: { subject: "after the raise", first_line: `Read that you "${q.replace(/\.$/, "")}."`, why_now: "Fresh capital: the way the company runs gets chosen in the next two quarters.", ask: "Worth a look?" },
+      leadership_change: { subject: "your first 90 days", first_line: `Saw the news: "${q}"`, why_now: "A new leader reviews the stack and the process in the first months.", ask: "Worth 15 minutes?" },
+      tech_change: { subject: "the switch", first_line: `Saw this: "${q}"`, why_now: "They are changing tools now, so the shortlist is open.", ask: "Worth 15 minutes?" },
+      other: { subject: "a quick idea", first_line: `Saw this: "${q}"`, why_now: "Recent public change at the account.", ask: "Worth 15 minutes?" },
+    }[trigger];
+    if (!pick.themed) a = { ...generic, angle: pick.angle, middle: asLine(pick.angle) };
+    else switch (trigger) {
       case "hiring":
         a = {
           subject: `your new ${role ?? "hire"}`,
           first_line: `Saw the ${role ?? "job"} posting: "${q}"`,
           why_now: `They are hiring a ${role ?? "new role"} now, which means the office workflow is being rebuilt this month.`,
-          angle: pickAngle(angles, /next quote/i),
+          angle: pick.angle,
           middle: `A ${role ?? "new hire"} will fix the schedule. What still leaks${techs ? ` at ${techs} techs` : ""} is the step after the job: a tech spots a failing unit and the replacement quote never goes out. We let the tech start that quote from the truck, before leaving the site.`,
           ask: `Worth 15 minutes before they start?`,
         };
@@ -142,7 +186,7 @@ function offline(rc: RunContext): Out {
           subject: "new techs, same follow-up?",
           first_line: `Saw the expansion news: "${q}"`,
           why_now: "New branch and new techs: habits get set in the first months, before anyone writes them down.",
-          angle: pickAngle(angles, /best tech/i),
+          angle: pick.angle,
           middle: `New techs fix the job in front of them. What they don't do yet is what your veterans do: make sure the replacement quote goes out. We let every tech start it from the truck.`,
           ask: "Open to a look before the new team starts?",
         };
@@ -152,29 +196,19 @@ function offline(rc: RunContext): Out {
           subject: "that google review",
           first_line: `A recent review of ${account} says: "${q}"`,
           why_now: "The review is public and recent; the fix is cheaper than the next lost replacement.",
-          angle: pickAngle(angles, /lost replacement/i),
+          angle: pick.angle,
           middle: `Not fun to read, but it's the most common way commercial shops lose replacement work: the tech does his part and the quote has nowhere to go. We let the tech send it from the truck, and the office sees every open quote.`,
           ask: "Worth 15 minutes?",
         };
         break;
-      case "funding":
+      default:
         a = {
           subject: "follow-up across acquisitions",
           first_line: `Read that you "${q.replace(/\.$/, "")}."`,
           why_now: "Fresh capital to roll up service companies: standard operating process gets chosen in the next two quarters.",
-          angle: pickAngle(angles, /best tech/i),
+          angle: pick.angle,
           middle: `Every shop you buy will have its own habit for the quote after a service call, usually "tell someone in the office." We make that step the same everywhere: the tech starts the quote from the truck, and you see every open one.`,
           ask: "Worth a look before the next deal closes?",
-        };
-        break;
-      default:
-        a = {
-          subject: "a quick idea",
-          first_line: `Saw this: "${q}"`,
-          why_now: "Recent public change at the account.",
-          angle: pickAngle(angles, /./),
-          middle: `Most commercial shops lose replacement work in the handoff between the truck and the office. We let the tech start the quote on site.`,
-          ask: "Worth 15 minutes?",
         };
     }
     const email = [`Hi {{first_name}},`, a.first_line, `${a.middle}${proof ? ` ${proof}` : ""}`, a.ask, `{{sender_name}}`].join("\n\n");
@@ -211,6 +245,12 @@ export const outboundSignal: AgentTemplate<typeof Schema> = {
   defaultCron: "0 8 * * 1-5",
   reads: READS,
   signalSources: ["social", "crm_note", "review", "other"],
+  readiness: {
+    min: 1,
+    usable: (s) => Boolean(s.account?.trim()) && triggerOf(s) !== null,
+    usableNoun: "naming a company with a buying trigger (hiring, a new location, funding, a new leader or a bad review)",
+    docs: [{ key: "outbound/approved-angles", label: "Approved angles" }],
+  },
   spec: {
     mission: "Reach the right accounts in the week the problem hurts, with a first line they can tell was written for them.",
     dataSources: ["Hiring posts", "New location and funding news", "Public reviews", "CRM notes", "ICP", "Approved angles", "Customer truth file"],
@@ -299,9 +339,24 @@ Write this run's outbound for ${rc.tenantName}.`,
         evidence: a.evidence,
       });
     }
-    const skippedTxt = [...badFit.map((a) => `${a.account} (fit ${a.fit_score})`), ...o.skipped.map((s) => `${s.account}: ${s.reason}`)];
+    // The summary lists exactly what the person will (or won't) find in the queue.
+    const named = drafts.map((d) => `${(d.payload as { account: string }).account} (${(TRIGGER_LABEL[(d.payload as { trigger: string }).trigger] ?? "trigger").toLowerCase()})`);
+    const parts = [
+      badFit.length ? `below the fit bar of ${FIT_THRESHOLD}: ${badFit.map((a) => `${a.account} (${a.fit_score})`).join(", ")}` : null,
+      blocked.length ? `held back for banned language: ${blocked.join(", ")}` : null,
+      sup.dropped ? `${sup.dropped} dropped without a quote we could verify` : null,
+      o.skipped.length ? `skipped: ${o.skipped.map((x) => `${x.account} (${x.reason.replace(/\.$/, "")})`).join("; ")}` : null,
+    ].filter(Boolean) as string[];
+    const head = drafts.length
+      ? `${drafts.length} ${drafts.length === 1 ? "message" : "messages"} ready for review: ${listJoin(named)}`
+      : unique.length
+        ? `No messages this time: ${unique.length} ${unique.length === 1 ? "account has" : "accounts have"} a trigger, none passed`
+        : o.skipped.length
+          ? "No messages this time"
+          : "No messages this time: no company in the window has a buying trigger";
     return {
-      summary: `${drafts.length ? `${drafts.length} ${drafts.length === 1 ? "message" : "messages"} for accounts with fresh triggers` : "No messages this time"}${badFit.length ? `; ${badFit.length} dropped as bad fit` : ""}${blocked.length ? `; ${blocked.length} blocked for banned language` : ""}${skippedTxt.length ? `. Skipped: ${skippedTxt.join("; ")}` : ""}.`,
+      substantive: drafts.length > 0,
+      summary: `${head}${parts.length ? `. ${parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(". ")}` : ""}.`,
       stats: {
         trigger_accounts: unique.length,
         messages: drafts.length,

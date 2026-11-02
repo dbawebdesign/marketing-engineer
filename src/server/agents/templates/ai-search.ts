@@ -70,8 +70,15 @@ function asSentence(f: { label: string; text: string; line: string }, company: s
   }
 }
 
+/** The name buyers know: the product the facts introduce ("Fieldbook is scheduling software..."), else the workspace name. */
+export function companyName(rc: Pick<RunContext, "tenantName" | "docs">) {
+  const first = lines(rc.docs["ai-search/company-facts"])[0] ?? "";
+  const m = /^([A-Z][\w&.'-]*(?:\s[A-Z][\w&.'-]*){0,3})\s+(?:is|helps|makes|builds|gives|lets)\b/.exec(first);
+  return m && !/^(We|Our|It|This|The)$/.test(m[1]!) ? m[1]! : rc.tenantName;
+}
+
 function offline(rc: RunContext): Out {
-  const company = rc.tenantName;
+  const company = companyName(rc);
   const facts = factBits(rc);
   const factsText = normalize(facts.map((f) => f.line).join(" "));
   const qs = lines(rc.docs["ai-search/buyer-questions"]).filter((l) => l.length > 8);
@@ -196,6 +203,14 @@ export const aiSearch: AgentTemplate<typeof Schema> = {
   tier: "deep",
   defaultCron: "0 9 * * 4",
   reads: READS,
+  // It answers from the two docs; signals only lend buyer wording, so none are required.
+  readiness: {
+    min: 0,
+    docs: [
+      { key: "ai-search/buyer-questions", label: "Buyer questions" },
+      { key: "ai-search/company-facts", label: "Company facts" },
+    ],
+  },
   spec: {
     mission: "Make the company easy for ChatGPT, Claude, Perplexity and Google to understand, quote and recommend for the questions buyers actually ask.",
     dataSources: ["Buyer questions", "Company facts", "Customer truth file", "Signals (for buyer language)"],
@@ -260,6 +275,17 @@ Build this week's answer pack for ${rc.tenantName}.`,
     };
     const counts = { covered: qs.filter((q) => q.status === "covered").length, partial: qs.filter((q) => q.status === "partial").length, missing: qs.filter((q) => q.status === "missing").length };
     const label = { covered: "Covered", partial: "Partly covered", missing: "Not covered" } as const;
+    // A pack with no answer to publish is a list of gaps, not a draft: say what's missing instead.
+    if (!publishable.length) {
+      return {
+        substantive: false,
+        summary: !qs.length
+          ? "No answers this time: Buyer questions has no questions in it yet. Add one question per line and run again."
+          : `No answers this time: your Company facts don't answer any of the ${qs.length} buyer question${qs.length === 1 ? "" : "s"}${ungrounded ? ` (${ungrounded} held back for citing facts we don't have)` : ""}. Add plain facts (what you sell, for whom, pricing, proof) and run again.`,
+        stats: { questions: qs.length, ...counts, held_back_ungrounded: ungrounded, fact_conflicts: conflicts.kept.length, missing_facts: qs.reduce((n, q) => n + q.missing_facts.length, 0), unverified_quotes: unverified + conflicts.unverifiedQuotes },
+        drafts: [],
+      };
+    }
     const body = `${qs
   .map(
     (q, i) => `### ${i + 1}. ${q.question}
@@ -282,7 +308,8 @@ Paste into the page that carries these answers (${publishable.length} of ${qs.le
 ${JSON.stringify(jsonld, null, 2)}
 \`\`\``;
     return {
-      summary: `${counts.covered} of ${qs.length} buyer questions covered by our facts, ${counts.partial} partly, ${counts.missing} not at all${conflicts.kept.length ? `; ${conflicts.kept.length} ${conflicts.kept.length === 1 ? "fact" : "facts"} contradicted by signals` : ""}.`,
+      substantive: true,
+      summary: `${counts.covered} of ${qs.length} buyer questions covered by our facts, ${counts.partial} partly, ${counts.missing} not at all; ${publishable.length} ${publishable.length === 1 ? "answer" : "answers"} ready for the site${ungrounded ? `, ${ungrounded} held back` : ""}${conflicts.kept.length ? `; ${conflicts.kept.length} ${conflicts.kept.length === 1 ? "fact" : "facts"} contradicted by signals` : ""}.`,
       stats: { questions: qs.length, ...counts, held_back_ungrounded: ungrounded, fact_conflicts: conflicts.kept.length, missing_facts: qs.reduce((n, q) => n + q.missing_facts.length, 0), unverified_quotes: unverified + conflicts.unverifiedQuotes },
       drafts: [
         {

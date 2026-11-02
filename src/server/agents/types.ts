@@ -60,7 +60,37 @@ export type RunContext = {
   now: Date;
 };
 
-export type TemplateResult = { drafts: DraftInput[]; summary: string; stats: Record<string, number> };
+export type TemplateResult = {
+  drafts: DraftInput[];
+  /** One sentence for the run log. When the run is not substantive, this is the specific reason. */
+  summary: string;
+  stats: Record<string, number>;
+  /**
+   * Whether the output says something worth a human's review (a memo with at least one change,
+   * a batch with hooks, at least one post or message, an answer pack with answers).
+   * When false the runner keeps no drafts and finishes the run with `summary` as the reason.
+   */
+  substantive: boolean;
+};
+
+/**
+ * What an agent needs before a run is worth starting. Counted on the same window and sources
+ * the runner reads, so the readiness shown on screen and the runner's own check agree.
+ */
+export type ReadinessSpec = {
+  /** Minimum signals from the agent's sources (default MIN_SIGNALS). */
+  min?: number;
+  /** A signal the agent can actually build from (e.g. one with a buying trigger). */
+  usable?: (s: SignalLite) => boolean;
+  /** Minimum usable signals (default 1 when `usable` is set). */
+  minUsable?: number;
+  /** "with a buying trigger (hiring, a new location, funding or a bad review)". */
+  usableNoun?: string;
+  /** Apply `usable` only on the offline engine (a model can work from any signal). */
+  usableOfflineOnly?: boolean;
+  /** Memory docs that must have content, with the name people see. */
+  docs?: { key: string; label: string }[];
+};
 
 export type AgentTemplate<S extends z.ZodType = z.ZodType> = {
   id: string;
@@ -74,6 +104,7 @@ export type AgentTemplate<S extends z.ZodType = z.ZodType> = {
   reads: string[];
   signalSources?: string[];
   needsMetrics?: boolean;
+  readiness?: ReadinessSpec;
   schema: S;
   systemPrompt: string;
   prompt(rc: RunContext): string;

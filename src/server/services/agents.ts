@@ -2,7 +2,7 @@ import { z } from "zod";
 import { withTenant, type Tx } from "@/lib/db";
 import { assertCan, type Ctx } from "@/lib/ctx";
 import { AppError, badRequest, notFound } from "@/lib/errors";
-import { MODELS } from "@/lib/ai/provider";
+import { aiEnabled, MODELS } from "@/lib/ai/provider";
 import { getTemplate, TEMPLATES } from "../agents/registry";
 import type { JobSpec, System } from "../agents/types";
 import { DAILY_RUN_LIMIT, enqueue, nextRun, scheduleProblem } from "../jobs";
@@ -38,8 +38,8 @@ async function withReadiness(tx: Tx, rows: Omit<Agent, "readiness">[]): Promise<
       continue;
     }
     const days = Math.min(Math.max(Number(a.spec?.lookbackDays ?? tpl.spec.lookbackDays) || 7, 1), 365);
-    const c = await countInputs(tx, tpl, days);
-    out.push({ ...a, readiness: readinessOf(tpl, c.signals, c.metrics, days) });
+    const c = await countInputs(tx, tpl, days, !aiEnabled());
+    out.push({ ...a, readiness: readinessOf({ ...tpl, name: a.name }, c, days) });
   }
   return out;
 }

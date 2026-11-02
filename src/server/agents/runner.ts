@@ -5,7 +5,8 @@ import { getTemplate } from "./registry";
 import type { AgentTemplate, JobSpec, MetricsDigest, RunContext } from "./types";
 import { dedupeEvidence, type SignalLite } from "./evidence";
 import { audit } from "../services/audit";
-import { readinessOf } from "./readiness";
+import { countLoaded, readinessOf } from "./readiness";
+import { inferOutcome } from "./text";
 
 type AgentRow = { id: string; tenant_id: string; template: string; system: string; name: string; spec: JobSpec; model: string };
 
@@ -22,7 +23,8 @@ async function gather(tx: Tx, agent: AgentRow, tpl: AgentTemplate, input: Record
       limit 400`,
     [days, tpl.signalSources ?? null],
   );
-  const signals = sigQ.rows.map((s) => ({ ...s, outcome: typeof s.metadata?.outcome === "string" ? (s.metadata.outcome as string) : null }));
+  // Outcome from metadata when the source sent one, otherwise from the note itself ("they signed", "went with a cheaper tool").
+  const signals = sigQ.rows.map((s) => ({ ...s, outcome: typeof s.metadata?.outcome === "string" ? (s.metadata.outcome as string) : inferOutcome(s.source, s.content) }));
   const docs = await tx.query<{ key: string; title: string; content: string; version: number }>(
     `select key, title, content, version from memory_docs where key = any($1)`,
     [tpl.reads],
@@ -107,23 +109,18 @@ export async function executeRun(tenantId: string, runId: string, opts: { finalA
   const { agent, tpl, rc } = claimed;
 
   // Never draft from no input: finish quietly and say what's missing.
-  const ready = readinessOf(tpl, rc.signals.length, Object.values(rc.metrics?.totals ?? {}).reduce((a, b) => a + b, 0), rc.spec.lookbackDays);
+  const offline = !aiEnabled();
+  const metricCount = Object.values(rc.metrics?.totals ?? {}).reduce((a, b) => a + b, 0) || (rc.metrics?.byAngle.length ?? 0);
+  const ready = readinessOf({ ...tpl, name: agent.name }, countLoaded(tpl, rc.signals, metricCount, rc.docs, offline), rc.spec.lookbackDays);
   if (!ready.ready) {
-    await withTenant(tenantId, async (tx) => {
-      const stats = { nothing: 1, signals: ready.signals, drafts: 0 };
-      await tx.query(
-        `update runs set status='succeeded', finished_at=now(), summary=$2, model='offline', input = input || jsonb_build_object('stats', $3::jsonb) where id=$1`,
-        [runId, ready.reason, JSON.stringify(stats)],
-      );
-      await audit(tx, { ...ctx, actor: { type: "agent", id: agent.id } }, "run.succeeded", { type: "run", id: runId }, stats);
-    });
+    await finishWithNothing(tenantId, runId, agent.id, ready.reason ?? "Nothing to read yet.", { signals: ready.total });
     return;
   }
 
   try {
     let data: unknown;
     let usage = { model: "offline", inputTokens: 0, outputTokens: 0, costUsd: 0 };
-    if (aiEnabled() && rc.signals.length + Object.keys(rc.docs).length > 0) {
+    if (!offline && rc.signals.length + Object.keys(rc.docs).length > 0) {
       const res = await generate({
         model: agent.model || MODELS[tpl.tier],
         system: tpl.systemPrompt,
@@ -139,6 +136,11 @@ export async function executeRun(tenantId: string, runId: string, opts: { finalA
       data = tpl.offline(rc);
     }
     const result = tpl.finalize(data as never, rc);
+    // Nothing worth a review (no changes, no hooks, no posts, no messages, no answers): keep no draft, say why.
+    if (!result.substantive || result.drafts.length === 0) {
+      await finishWithNothing(tenantId, runId, agent.id, result.summary, result.stats, usage);
+      return;
+    }
     // Output built on sample signals is sample too (cleared with the sample).
     const isSample = (rc.signals as { is_sample?: boolean }[]).some((s) => s.is_sample);
     await withTenant(tenantId, async (tx) => {
@@ -172,6 +174,29 @@ export async function executeRun(tenantId: string, runId: string, opts: { finalA
     );
     throw e;
   }
+}
+
+/** Finish a run that has nothing for a human to review: succeeded, no drafts, and the reason as its summary. */
+async function finishWithNothing(
+  tenantId: string,
+  runId: string,
+  agentId: string,
+  reason: string,
+  stats: Record<string, number>,
+  usage: { model: string; inputTokens: number; outputTokens: number; costUsd: number } = { model: "offline", inputTokens: 0, outputTokens: 0, costUsd: 0 },
+) {
+  const all = { ...stats, nothing: 1, drafts: 0 };
+  await withTenant(tenantId, async (tx) => {
+    const own = await tx.query(`select 1 from runs where id = $1 and status = 'running' for update`, [runId]);
+    if (!own.rowCount) return;
+    await tx.query(
+      `update runs set status='succeeded', finished_at=now(), summary=$2, model=$3, input_tokens=$4, output_tokens=$5, cost_usd=$6,
+              input = input || jsonb_build_object('stats', $7::jsonb)
+        where id=$1`,
+      [runId, reason.slice(0, 1000), usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd, JSON.stringify(all)],
+    );
+    await audit(tx, { ...systemCtx(tenantId), actor: { type: "agent", id: agentId } }, "run.succeeded", { type: "run", id: runId }, all);
+  });
 }
 
 /** Fail runs that have been "running" too long (crashed worker). */

@@ -4,7 +4,7 @@ import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
 import { bullets, findBanned, findSentence, parseBanned, renderBanned, techsOf } from "./guardrails";
-import { draftTitle, fromSignals, meta } from "../format";
+import { countBySource, draftTitle, fromSignals, meta } from "../format";
 
 const READS = ["creative/offers", "customer-truth/what-the-market-is-telling-us", "outbound/approved-angles", "content/winning-hooks", "content/founder-voice", "outbound/banned-language"];
 const CHANNELS = ["paid_social", "linkedin", "x", "search", "landing_page", "email", "outbound", "other"] as const;
@@ -59,6 +59,23 @@ function find(sigs: SignalLite[], re: RegExp) {
   return null;
 }
 
+/** The buyer lines each angle is built on. A signal matching none of them gives the offline writer nothing to test. */
+const ANGLE_LINES = {
+  money: /\$\s?\d[\d,]{2,}/,
+  blind: /\b(can't see|cannot see|no idea|on the table)\b/i,
+  handoff: /\b(handoff|black hole|never turns|never gets sent|nowhere to go)\b/i,
+  best: /\bbest tech\b/i,
+  proof: /\b(paid for|first month|same day)\b/i,
+};
+// The loss angle's hooks are about a quote nobody sent: only build it from a note that says so.
+const moneyLine = (s: SignalLite) => (/\b(quote|follow)/i.test(s.content) ? findSentence(s, ANGLE_LINES.money) : null);
+
+export function angleable(s: SignalLite) {
+  return Boolean(
+    moneyLine(s) || findSentence(s, ANGLE_LINES.blind) || findSentence(s, ANGLE_LINES.handoff) || findSentence(s, ANGLE_LINES.best) || (s.source === "review" && findSentence(s, ANGLE_LINES.proof)),
+  );
+}
+
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
   const offer = parseOffer(rc);
@@ -71,7 +88,7 @@ function offline(rc: RunContext): Out {
   const approved = bullets(rc.docs["outbound/approved-angles"]);
 
   // 1. A specific loss.
-  const money = find(sigs, /\$\s?\d[\d,]{2,}/);
+  const money = sigs.map((s) => ({ s, q: moneyLine(s) })).find((x): x is { s: SignalLite; q: string } => Boolean(x.q)) ?? null;
   if (money) {
     const amount = /\$\s?\d[\d,]+/.exec(money.q)![0];
     const what = /\b(chiller|rooftop unit|boiler|compressor|furnace|unit)\b/i.exec(money.q)?.[1]?.toLowerCase() ?? "equipment";
@@ -94,7 +111,7 @@ function offline(rc: RunContext): Out {
   }
 
   // 2. The leak they can't count.
-  const blind = find(sigs, /\b(can't see|cannot see|no idea|on the table)\b/i);
+  const blind = find(sigs, ANGLE_LINES.blind);
   if (blind) {
     const said = unquote(blind.q).replace(/\.$/, "");
     angles.push({
@@ -115,7 +132,7 @@ function offline(rc: RunContext): Out {
   }
 
   // 3. The handoff that breaks.
-  const handoff = find(sigs, /\b(handoff|black hole|never turns|never gets sent|nowhere to go)\b/i);
+  const handoff = find(sigs, ANGLE_LINES.handoff);
   if (handoff) {
     const nextQuote = approved.find((a) => /next quote/i.test(a));
     angles.push({
@@ -136,7 +153,7 @@ function offline(rc: RunContext): Out {
   }
 
   // 4. Every tech, your best tech.
-  const best = find(sigs, /\bbest tech\b/i);
+  const best = find(sigs, ANGLE_LINES.best);
   if (best) {
     const techs = techsOf(best.s);
     angles.push({
@@ -157,7 +174,7 @@ function offline(rc: RunContext): Out {
   }
 
   // 5. Proof from a customer.
-  const proof = sigs.filter((s) => s.source === "review").map((s) => ({ s, q: findSentence(s, /\b(paid for|first month|same day)\b/i) })).find((x): x is { s: SignalLite; q: string } => Boolean(x.q));
+  const proof = sigs.filter((s) => s.source === "review").map((s) => ({ s, q: findSentence(s, ANGLE_LINES.proof) })).find((x): x is { s: SignalLite; q: string } => Boolean(x.q));
   if (proof) {
     const second = findSentence(proof.s, /same day/i);
     angles.push({
@@ -178,10 +195,12 @@ function offline(rc: RunContext): Out {
   }
 
   const order = angles.map((a) => a.name);
-  const lead = order.includes("The leak you can't count") ? "The leak you can't count" : order[0] ?? "the strongest angle";
+  const lead = order.includes("The leak you can't count") ? "The leak you can't count" : order[0];
   return {
     offer: offer.detail ? `${offer.name}: ${offer.detail}` : offer.name,
-    hypothesis: `Angles built on a concrete loss in the buyer's own words will beat product-feature framing on demo requests per click. We expect "${lead}" to win because inbound already arrives using that language.`,
+    hypothesis: lead
+      ? `Angles built on a concrete loss in the buyer's own words will beat product-feature framing on demo requests per click. We expect "${lead}" to win because inbound already arrives using that language.`
+      : "",
     channel: isCalc ? "paid_social" : isPilot ? "outbound" : "paid_social",
     metric: isPilot ? "qualified_reply" : "demo_request",
     angles,
@@ -198,6 +217,11 @@ export const creativeTesting: AgentTemplate<typeof Schema> = {
   tier: "fast",
   defaultCron: "0 9 * * 3",
   reads: READS,
+  readiness: {
+    usable: angleable,
+    usableOfflineOnly: true,
+    usableNoun: "with a buyer line to build an angle on (a dollar loss from a missed quote, \"we can't see\", a broken handoff, \"our best tech\", or a review saying it paid for itself)",
+  },
   spec: {
     mission: "Find the angle that sells the offer by testing many hooks built from real buyer language, not guesses.",
     dataSources: ["Offers doc", "Customer truth file (recommended test, buyer language)", "Approved angles", "Winning hooks", "Recent signals"],
@@ -265,15 +289,25 @@ Write the batch for ${rc.tenantName}.`;
     ];
     const nHooks = angles.reduce((n, a) => n + a.hooks.length, 0);
     const [offerName, ...offerRest] = o.offer.split(/:\s+/);
-    const body = `${o.hypothesis}
-
-## Hooks
+    // A batch with no hooks is not a test: keep no draft, start no experiment.
+    if (nHooks === 0) {
+      const why = [sup.dropped ? `${sup.dropped} angle${sup.dropped === 1 ? "" : "s"} dropped because their quotes didn't match the signals` : null, bannedHooks ? `${bannedHooks} line${bannedHooks === 1 ? "" : "s"} removed for banned language` : null].filter(Boolean);
+      return {
+        substantive: false,
+        summary: why.length
+          ? `No hook batch this time: ${why.join("; ")}.`
+          : `No hook batch this time: ${countBySource(rc.signals)} in the last ${rc.spec.lookbackDays} days, none with a buyer line to build an angle on (a dollar loss from a missed quote, "we can't see", a broken handoff, "our best tech", or a review saying it paid for itself).`,
+        stats: { angles: 0, hooks: 0, ads: 0, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
+        drafts: [],
+      };
+    }
+    const body = `${o.hypothesis ? `${o.hypothesis}\n\n` : ""}## Hooks
 ${angles
+  .filter((a) => a.hooks.length)
   .map((a, ai) => `### ${ai + 1}. ${a.name}\n_${a.insight}_\n\n${a.hooks.map((h, hi) => `${ai + 1}.${hi + 1} ${h}`).join("  \n")}`)
-  .join("\n\n")}
-
-## Ad concepts
-${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_text}  \nVisual: ${x.visual}`).join("\n\n")}`;
+  .join("\n\n")}${
+      ads.length ? `\n\n## Ad concepts\n${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_text}  \nVisual: ${x.visual}`).join("\n\n")}` : ""
+    }`;
     const metaRow = meta(
       ["Offer", offerRest.join(": ") || null],
       ["Channel", o.channel.replace("_", " ")],
@@ -284,6 +318,7 @@ ${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_t
       ["Notes", o.notes],
     );
     return {
+      substantive: true,
       summary: `${nHooks} ${nHooks === 1 ? "hook" : "hooks"} and ${ads.length} ${ads.length === 1 ? "ad concept" : "ad concepts"} across ${angles.length} ${angles.length === 1 ? "angle" : "angles"} for "${o.offer.split(":")[0]}".`,
       stats: { angles: angles.length, hooks: nHooks, ads: ads.length, dropped_angles: sup.dropped, banned_removed: bannedHooks, unverified_quotes: sup.unverifiedQuotes },
       drafts: [
