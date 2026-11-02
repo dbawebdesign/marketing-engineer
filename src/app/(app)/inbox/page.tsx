@@ -6,9 +6,22 @@ import { isUuid } from "@/lib/db";
 import { L } from "@/components/nav";
 import { Markdown } from "@/components/markdown";
 import { ReviewPane, InboxKeys } from "@/components/review-pane";
-import { Empty, Kbd, cx, timeAgo } from "@/components/ui";
+import { Empty, Kbd, cx, plural, timeAgo } from "@/components/ui";
+import { isUndoable, recentRejectionReasons } from "@/server/services/review-extra";
 
 export const metadata = { title: "Inbox" };
+
+const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/** Drop a leading "# Title" when the page header already shows that title. Render-time only. */
+function withoutTitleH1(body: string, title: string) {
+  const m = body.match(/^\s*#\s+(.+?)\s*#*\s*(?:\r?\n|$)/);
+  if (!m) return body;
+  const h = norm(m[1]!);
+  const t = norm(title);
+  if (!h || !t || !(h === t || t.startsWith(h) || h.startsWith(t))) return body;
+  return body.slice(m[0].length).replace(/^\s*\n/, "");
+}
 
 const TABS = [
   { key: "pending", label: "To review" },
@@ -26,6 +39,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
   const idx = selected ? drafts.findIndex((d) => d.id === selected.id) : -1;
   const nextId = drafts[idx + 1]?.id ?? (idx > 0 ? drafts[idx - 1]?.id : null) ?? null;
   const q = (extra: string) => `/inbox?tab=${tab}${extra}`;
+  const reasons = selected?.agent_id && selected.status === "pending" ? await recentRejectionReasons(ctx, selected.agent_id).catch(() => []) : [];
 
   return (
     <div className="animate-in">
@@ -53,10 +67,10 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
         </Empty>
       ) : (
         <div className="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
-          <InboxKeys ids={drafts.map((d) => d.id)} current={selected?.id ?? null} />
+          <InboxKeys ids={drafts.map((d) => d.id)} current={selected?.id ?? null} tab={tab} />
           <ul className="space-y-1 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:overflow-y-auto">
             {drafts.map((d) => (
-              <li key={d.id}>
+              <li key={d.id} data-draft={d.id}>
                 <L
                   href={q(`&d=${d.id}`)}
                   scroll={false}
@@ -65,7 +79,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                   <p className="line-clamp-2 text-[14px] font-medium leading-snug">{d.title}</p>
                   <p className="mt-1 text-xs text-ink-3">
                     {SYSTEM_META[d.system as System]?.short ?? d.system} · {timeAgo(d.created_at)}
-                    {d.evidence?.length ? ` · ${d.evidence.length} receipts` : ""}
+                    {d.evidence?.length ? ` · ${plural(d.evidence.length, "receipt")}` : ""}
                   </p>
                 </L>
               </li>
@@ -80,6 +94,7 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
             {selected ? (
               <ReviewPane
                 nextId={nextId}
+                reasons={reasons}
                 draft={{
                   id: selected.id,
                   title: selected.title,
@@ -89,8 +104,9 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
                   system_label: SYSTEM_META[selected.system as System]?.label ?? selected.system,
                   agent_name: selected.agent_name,
                   created_at: selected.created_at,
+                  undoable: isUndoable(selected.type),
                   evidence: selected.evidence ?? [],
-                  html: <Markdown>{selected.body}</Markdown>,
+                  html: <Markdown>{withoutTitleH1(selected.body, selected.title)}</Markdown>,
                 }}
               />
             ) : null}

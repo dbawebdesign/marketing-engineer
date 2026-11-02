@@ -4,9 +4,21 @@ import { listSignals, signalStats, SOURCE_LABEL, SIGNAL_SOURCES } from "@/server
 import { L } from "@/components/nav";
 import { AddSignals } from "@/components/add-signals";
 import { DemoButton } from "@/components/demo-button";
-import { Badge, Empty, PageHeader, cx, timeAgo } from "@/components/ui";
+import { Badge, Empty, PageHeader, cx, plural, timeAgo } from "@/components/ui";
 
 export const metadata = { title: "Signals" };
+
+/** Untitled notes lead with their first line (or sentence, when the first line runs long). */
+function splitNote(title: string, content: string) {
+  if (title.trim()) return { head: title.trim(), rest: content };
+  const text = content.trim();
+  const nl = text.indexOf("\n");
+  const line = nl < 0 ? text : text.slice(0, nl);
+  if (line.length <= 110) return { head: line, rest: nl < 0 ? "" : text.slice(nl + 1).trim() };
+  const m = line.slice(0, 111).match(/^.{20,}?[.?!](?=\s)/);
+  if (m) return { head: m[0], rest: text.slice(m[0].length).trim() };
+  return { head: line, rest: nl < 0 ? "" : text.slice(nl + 1).trim(), clamp: true };
+}
 
 export default async function SignalsPage({ searchParams }: { searchParams: Promise<{ source?: string; q?: string; add?: string }> }) {
   const ctx = await requireCtx();
@@ -30,26 +42,47 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
         </Empty>
       ) : (
         <>
-          <div className="mb-6 flex flex-wrap items-center gap-2">
-            <form className="relative mr-2">
+          <div className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center">
+            <form className="relative shrink-0" role="search">
               {source ? <input type="hidden" name="source" value={source} /> : null}
               <Search size={14} className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-3" />
               <input
                 name="q"
+                type="search"
                 defaultValue={q}
+                aria-label="Search signals"
                 placeholder="Search signals"
-                className="h-8 w-56 rounded-lg bg-surface pl-8 pr-3 text-sm ring-1 ring-line-strong placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-accent"
+                className="h-8 w-full rounded-lg bg-surface pl-8 pr-3 text-sm ring-1 ring-line-strong placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-accent sm:w-56"
               />
             </form>
-            <L href={href()} className={cx("h-8 rounded-lg px-3 text-[13px] leading-8", !source ? "bg-ink text-bg" : "text-ink-2 hover:bg-subtle")}>
-              All <span className="tnum opacity-60">{total}</span>
-            </L>
-            {stats.map((s) => (
-              <L key={s.source} href={href(s.source)} className={cx("h-8 rounded-lg px-3 text-[13px] leading-8", source === s.source ? "bg-ink text-bg" : "text-ink-2 hover:bg-subtle")}>
-                {SOURCE_LABEL[s.source as keyof typeof SOURCE_LABEL] ?? s.source} <span className="tnum opacity-60">{s.total}</span>
+            <nav
+              aria-label="Filter by source"
+              className="-mx-4 flex min-w-0 gap-1 overflow-x-auto px-4 [mask-image:linear-gradient(to_right,transparent,#000_16px,#000_calc(100%-24px),transparent)] [scrollbar-width:none] sm:mx-0 sm:px-0 sm:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)] [&::-webkit-scrollbar]:hidden"
+            >
+              <L href={href()} aria-current={!source ? "page" : undefined} className={cx("h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-[13px] leading-8 transition-colors", !source ? "bg-ink text-bg" : "text-ink-2 hover:bg-subtle hover:text-ink")}>
+                All <span className="tnum opacity-60">{total}</span>
               </L>
-            ))}
+              {stats.map((s) => (
+                <L
+                  key={s.source}
+                  href={href(s.source)}
+                  aria-current={source === s.source ? "page" : undefined}
+                  className={cx("h-8 shrink-0 whitespace-nowrap rounded-lg px-3 text-[13px] leading-8 transition-colors", source === s.source ? "bg-ink text-bg" : "text-ink-2 hover:bg-subtle hover:text-ink")}
+                >
+                  {SOURCE_LABEL[s.source as keyof typeof SOURCE_LABEL] ?? s.source} <span className="tnum opacity-60">{s.total}</span>
+                </L>
+              ))}
+              <span aria-hidden className="w-4 shrink-0" />
+            </nav>
           </div>
+          {q ? (
+            <p className="-mt-3 mb-4 text-sm text-ink-3">
+              {plural(signals.length, "signal")} matching “{q}”{" "}
+              <L href={source ? `/signals?source=${source}` : "/signals"} className="text-ink-2 underline-offset-2 hover:text-ink hover:underline">
+                Clear
+              </L>
+            </p>
+          ) : null}
           {signals.length ? (
             <ul className="divide-y divide-line overflow-hidden rounded-xl bg-surface ring-1 ring-line">
               {signals.map((s) => (
@@ -68,8 +101,15 @@ export default async function SignalsPage({ searchParams }: { searchParams: Prom
                       </a>
                     ) : null}
                   </div>
-                  {s.title ? <p className="font-medium">{s.title}</p> : null}
-                  <p className="mt-0.5 line-clamp-3 text-[14px] leading-relaxed text-ink-2">{s.content}</p>
+                  {(() => {
+                    const n = splitNote(s.title, s.content);
+                    return (
+                      <>
+                        <p className={cx("font-medium text-ink text-pretty", n.clamp && "line-clamp-1")}>{n.head}</p>
+                        {n.rest ? <p className="mt-0.5 line-clamp-3 text-[14px] leading-relaxed text-ink-2">{n.rest}</p> : null}
+                      </>
+                    );
+                  })()}
                 </li>
               ))}
             </ul>

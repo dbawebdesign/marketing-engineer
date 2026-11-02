@@ -3,7 +3,7 @@ import { useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { loadDemoAction } from "@/app/(app)/actions";
-import { Button } from "./ui";
+import { Button, plural } from "./ui";
 import { toast } from "./toast";
 
 export function DemoButton({ variant = "secondary" }: { variant?: "primary" | "secondary" }) {
@@ -17,14 +17,14 @@ export function DemoButton({ variant = "secondary" }: { variant?: "primary" | "s
         start(async () => {
           const r = await loadDemoAction();
           if (r.ok) {
-            toast.ok(`Loaded ${r.data?.inserted ?? 0} sample signals`);
+            toast.ok(`Loaded ${plural(r.data?.inserted ?? 0, "sample signal")}`);
             router.refresh();
           } else toast.error(r.error);
         })
       }
     >
-      {pending ? <LoaderCircle size={14} className="animate-spin" /> : null}
-      Load sample data
+      {pending ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : null}
+      {pending ? "Loading samples…" : "Load sample data"}
     </Button>
   );
 }

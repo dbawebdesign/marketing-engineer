@@ -1,59 +1,126 @@
 "use client";
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Play, LoaderCircle } from "lucide-react";
 import { runAgentAction, runStatusAction } from "@/app/(app)/actions";
-import { Button } from "./ui";
+import { runFirstDraftAction } from "@/app/(app)/actions-extra";
+import { Button, cx } from "./ui";
 import { toast } from "./toast";
 import { useBase } from "./nav";
 
-/** Runs an agent and follows the run until it finishes, then routes to the result. */
-export function RunButton({ agentId, label = "Run now", variant = "primary", input, size }: { agentId: string; label?: string; variant?: "primary" | "secondary"; input?: Record<string, unknown>; size?: "sm" | "md" }) {
-  const [runId, setRunId] = useState<string | null>(null);
+/** Runs being followed right now; LiveRefresh holds off so a follower can finish and navigate. */
+export const following = { n: 0 };
+const followed = new Map<string, Set<(phase: "running" | "done") => void>>();
+
+type Router = ReturnType<typeof useRouter>;
+
+/**
+ * Follow a run to the end, independent of any component: the button that started it
+ * may unmount when the page re-renders. On success, open its first draft, but only
+ * if the person is still on the page where they asked for it.
+ */
+function follow(runId: string, router: Router, base: string, listener: (phase: "running" | "done") => void) {
+  const existing = followed.get(runId);
+  if (existing) {
+    existing.add(listener);
+    return () => void existing.delete(listener);
+  }
+  const listeners = new Set([listener]);
+  followed.set(runId, listeners);
+  following.n++;
+  const from = window.location.pathname;
+  const emit = (p: "running" | "done") => listeners.forEach((l) => l(p));
+  const finish = () => {
+    followed.delete(runId);
+    following.n--;
+    emit("done");
+  };
+  let tries = 0;
+  let showedProgress = false;
+  const poll = async () => {
+    tries++;
+    const r = await runStatusAction(runId).catch(() => null);
+    const run = r?.ok ? r.data : undefined;
+    if (run && (run.status === "succeeded" || run.status === "failed" || run.status === "canceled")) {
+      if (run.status === "succeeded") {
+        const d = await runFirstDraftAction(runId).catch(() => null);
+        if (d?.ok && d.data) {
+          toast.ok("Done. Your draft is ready for review.");
+          if (window.location.pathname === from) router.push(`${base}/inbox?d=${d.data}`);
+        } else toast.ok(run.summary || "Done. Nothing new to review this time.");
+      } else toast.error(run.error || "The run failed.");
+      finish();
+      router.refresh();
+      return;
+    }
+    if (run?.status === "running") emit("running");
+    // Still going after the first check: let the page show it (e.g. Today's "reading signals" row).
+    if (!showedProgress) {
+      showedProgress = true;
+      router.refresh();
+    }
+    if (tries > 400) return finish();
+    setTimeout(poll, Math.min(800 + tries * 300, 4000));
+  };
+  setTimeout(poll, 600);
+  return () => void listeners.delete(listener);
+}
+
+/** Runs an agent, shows progress in place, then opens the first draft it wrote. */
+export function RunButton({
+  agentId,
+  label = "Run now",
+  variant = "primary",
+  input,
+  size,
+  workingLabel = "Reading signals…",
+  className,
+  activeRunId,
+}: {
+  agentId: string;
+  label?: string;
+  variant?: "primary" | "secondary";
+  input?: Record<string, unknown>;
+  size?: "sm" | "md";
+  workingLabel?: string;
+  className?: string;
+  /** Resume following a run that's already in flight (e.g. after a reload). */
+  activeRunId?: string | null;
+}) {
+  const [runId, setRunId] = useState<string | null>(activeRunId ?? null);
+  const [phase, setPhase] = useState<"queued" | "running">(activeRunId ? "running" : "queued");
   const [pending, start] = useTransition();
   const router = useRouter();
   const base = useBase();
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (!runId) return;
-    let tries = 0;
-    const poll = async () => {
-      tries++;
-      const r = await runStatusAction(runId);
-      if (r.ok && r.data && (r.data.status === "succeeded" || r.data.status === "failed")) {
-        setRunId(null);
-        if (r.data.status === "succeeded") {
-          toast.ok("Done. Your draft is waiting for review.");
-          router.push(`${base}/inbox`);
-        } else toast.error(r.data.error ?? "The run failed.");
-        router.refresh();
-        return;
-      }
-      timer.current = setTimeout(poll, Math.min(1000 + tries * 300, 4000));
-    };
-    timer.current = setTimeout(poll, 700);
-    return () => {
-      if (timer.current) clearTimeout(timer.current);
-    };
+    return follow(runId, router, base, (p) => {
+      if (p === "running") setPhase("running");
+      else setRunId(null);
+    });
   }, [runId, router, base]);
 
   const busy = pending || !!runId;
+  const text = !busy ? label : runId && phase === "running" ? workingLabel : "Starting…";
   return (
     <Button
       variant={variant}
       size={size}
       disabled={busy}
+      aria-busy={busy}
+      className={cx(busy && "disabled:opacity-80", className)}
       onClick={() =>
         start(async () => {
+          setPhase("queued");
           const r = await runAgentAction(agentId, input);
           if (!r.ok) toast.error(r.error);
           else if (r.data) setRunId(r.data.runId);
         })
       }
     >
-      {busy ? <LoaderCircle size={14} className="animate-spin" /> : <Play size={13} className="fill-current" />}
-      {busy ? "Working…" : label}
+      {busy ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : <Play size={13} className="fill-current" />}
+      <span aria-live="polite">{text}</span>
     </Button>
   );
 }

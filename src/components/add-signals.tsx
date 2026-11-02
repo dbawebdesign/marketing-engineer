@@ -1,9 +1,10 @@
 "use client";
-import { useRef, useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { LoaderCircle, Plus, Upload, X } from "lucide-react";
 import { addSignalsAction, importCsvAction } from "@/app/(app)/actions";
-import { Button, Input, Label, Textarea, cx } from "./ui";
+import { Button, Input, Label, Textarea, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
 
 const SOURCES: [string, string][] = [
@@ -53,10 +54,38 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const [pending, start] = useTransition();
   const router = useRouter();
   const file = useRef<HTMLInputElement>(null);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setMounted(true);
+    const onOpen = () => setOpen(true);
+    window.addEventListener("me:add-signals", onOpen);
+    return () => window.removeEventListener("me:add-signals", onOpen);
+  }, []);
+
+  // Esc closes; the page behind doesn't scroll; focus returns to the trigger.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !e.defaultPrevented) {
+        e.preventDefault();
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const back = trigger.current;
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+      back?.focus();
+    };
+  }, [open]);
   const count = split ? content.split(/\n\s*\n+/).filter((c) => c.trim()).length : content.trim() ? 1 : 0;
 
   const done = (r: { inserted: number; duplicates: number }) => {
-    toast.ok(`Added ${r.inserted} signal${r.inserted === 1 ? "" : "s"}${r.duplicates ? ` · ${r.duplicates} already here` : ""}`);
+    toast.ok(`Added ${plural(r.inserted, "signal")}${r.duplicates ? ` · ${r.duplicates} already here` : ""}`);
     setContent("");
     setAccount("");
     router.refresh();
@@ -85,18 +114,21 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
       }
     });
 
-  if (!open)
-    return (
-      <Button variant="primary" onClick={() => setOpen(true)}>
-        <Plus size={14} /> Add signals
-      </Button>
-    );
+  const button = (
+    <button ref={trigger} type="button" className={buttonClass("primary")} onClick={() => setOpen(true)} aria-haspopup="dialog" aria-expanded={open}>
+      <Plus size={14} /> Add signals
+    </button>
+  );
+  if (!open || !mounted) return button;
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/15 backdrop-blur-[1px]" onMouseDown={() => setOpen(false)}>
-      <div className="animate-in flex h-full w-full max-w-[520px] flex-col bg-bg shadow-pop ring-1 ring-line" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-label="Add signals">
+    <>
+      {button}
+      {createPortal(
+    <div className="fixed inset-0 z-40 flex justify-end bg-black/20 backdrop-blur-[2px]" onMouseDown={() => setOpen(false)}>
+      <div className="animate-in flex h-dvh w-full max-w-[520px] flex-col bg-bg shadow-pop ring-1 ring-line" onMouseDown={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="add-signals-title">
         <div className="flex items-center justify-between border-b border-line px-6 py-4">
-          <h2 className="font-semibold">Add signals</h2>
+          <h2 id="add-signals-title" className="font-semibold">Add signals</h2>
           <Button variant="ghost" size="sm" onClick={() => setOpen(false)} aria-label="Close">
             <X size={16} />
           </Button>
@@ -118,7 +150,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             </div>
           </div>
           <label className="block">
-            <Label hint={split && count > 1 ? `${count} notes` : undefined}>Paste notes</Label>
+            <Label hint={split && count > 1 ? plural(count, "note") : undefined}>Paste notes</Label>
             <Textarea
               value={content}
               onChange={(e) => setContent(e.target.value)}
@@ -161,10 +193,13 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             }
           >
             {pending ? <LoaderCircle size={14} className="animate-spin" /> : null}
-            Add {count > 1 ? `${count} notes` : "note"}
+            Add {count > 1 ? plural(count, "note") : "note"}
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+        document.body,
+      )}
+    </>
   );
 }
