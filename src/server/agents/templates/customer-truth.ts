@@ -3,7 +3,7 @@ import type { AgentTemplate, RunContext } from "../types";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { dedupeEvidence, keepSupported, type VerifiedEvidence } from "../evidence";
 import { countBySource, listJoin, meta, onePerItem, shortDate } from "../format";
-import { bestSentence, sentences, tokens, topPhrases } from "../text";
+import { bestSentence, clip, sentences, strongestSentences, tokens, topPhrases } from "../text";
 import { PULSE_MIN } from "../readiness";
 
 const Ev = z.object({ signal_id: z.string(), quote: z.string() });
@@ -83,17 +83,21 @@ export function nothingToSay(sigs: { id: string; source: string; account: string
   return `Not enough to say what changed yet: ${countBySource(sigs)}${facts.length ? `, ${facts.join(" and ")}` : ""}. Add ${asks.join(", or ")}.`;
 }
 
+/** Where a phrase appeared, stated as fact; no characterisation the notes don't support. */
 function whyFor(sources: string[]): string {
   const has = (k: string) => sources.includes(k);
-  if (has("churn_note")) return "It also shows up in churn notes, so it costs customers, not just deals.";
-  if (has("sales_call") && has("support_ticket")) return "It's both a reason to buy and a product gap customers hit later.";
-  if (has("review")) return "Customers repeat it in public reviews: free proof to reuse.";
-  if (has("sales_call")) return "Buyers raise it on calls without being asked.";
-  if (has("social")) return "People say it in public, in their own words.";
-  return "It keeps coming up across sources.";
+  if (has("churn_note")) return "It also appears in churn notes.";
+  if (has("sales_call") && has("support_ticket")) return "It appears in both sales calls and support tickets.";
+  if (has("review")) return "It appears in public reviews.";
+  if (has("social")) return "It appears in public posts.";
+  return "Read the quotes before acting on it.";
 }
 
-const OBJECTION = /\b(price|pricing|cost|expensive|cheaper|budget|per-tech|hard to justify|not interested|not urgent|left for|competitor|confusing|buried|took longer|built for bigger|bundles)\b/i;
+/** Prefix for every theme the offline engine asserts: it matched words, it did not understand them. */
+export const OFFLINE_THEME = "Recurring phrase (offline match, unverified)";
+export const OFFLINE_SINGLE = "Single signal, not a pattern yet";
+
+const OBJECTION = /\b(price|pricing|cost|expensive|steep|cheaper|budget|per-tech|hard to justify|not interested|not urgent|left for|competitor|confusing|buried|took longer|built for bigger|bundles)\b/i;
 
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
@@ -125,8 +129,8 @@ function offline(rc: RunContext): Out {
         ? `Deals we won talked about ${winning}. Deals we lost talked about ${lostWords}.`
         : `Deals we won kept coming back to ${winning}.`;
       changes.push({
-        claim: `${ws.length} of ${won.length} won deals brought up ${winning}; ${lost.length === 1 ? "the one lost deal didn't" : `none of the ${lost.length} lost deals did`}.`,
-        why_it_matters: lostWords ? `Buyers often open with ${lostWords}, but that isn't what closes. Lead with what closes.` : "Lead with what closes.",
+        claim: `${OFFLINE_THEME}: ${ws.length} of ${won.length} won deals brought up ${winning}; ${lost.length === 1 ? "the one lost deal didn't" : `none of the ${lost.length} lost deals did`}.`,
+        why_it_matters: lostWords ? `The lost deals talked about ${lostWords} instead.` : "Check the quotes: it may be what closes.",
         strength: ws.length >= 3 ? "strong" : "emerging",
         count: ws.length,
         evidence: ws.slice(0, 3).flatMap((s) => quote(s, wonP.phrase)),
@@ -147,7 +151,7 @@ function offline(rc: RunContext): Out {
     if (hits.length < 2 || voices(hits) < 2) continue;
     const sources = [...new Set(hits.map((h) => h.source))];
     changes.push({
-      claim: `“${words}” came up in ${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}.`,
+      claim: `${OFFLINE_THEME}: “${words}” came up in ${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}.`,
       why_it_matters: whyFor(sources),
       strength: hits.length >= 4 ? "strong" : "emerging",
       count: hits.length,
@@ -155,15 +159,38 @@ function offline(rc: RunContext): Out {
     });
   }
 
+  // 2b. Nothing recurs: say so, and quote the strongest single signals instead of inventing a pattern.
+  // One company on repeat is still one voice; that case is left to nothingToSay().
+  let noTheme = false;
+  if (!changes.length && voices(sigs) >= 2) {
+    // Price and competitor pushback is listed under Objections; keep this list for the other pains.
+    const ranked = strongestSentences(sigs, 8);
+    const pains = ranked.filter((x) => !OBJECTION.test(x.sentence));
+    const strongest = (pains.length ? pains : ranked).slice(0, 3);
+    if (strongest.length) {
+      noTheme = true;
+      headline = `No theme repeats across these ${sigs.length} signals yet. Strongest single signal: “${clip(strongest[0]!.sentence, 160)}”`;
+      for (const x of strongest) {
+        changes.push({
+          claim: `${OFFLINE_SINGLE}: ${SOURCE_WORD[x.item.source]?.replace(/s$/, "") ?? "note"}${x.item.account ? ` from ${x.item.account}` : ""}`,
+          why_it_matters: "Raised once. Watch for it in the next calls before acting on it.",
+          strength: "emerging",
+          count: 1,
+          evidence: [{ signal_id: x.item.id, quote: x.sentence }],
+        });
+      }
+    }
+  }
+
   // 3. Objections: sentences from lost deals, churn notes and tickets that push back.
-  const objectionSources = sigs.filter((s) => s.outcome === "lost" || s.source === "churn_note" || s.source === "review" || s.source === "support_ticket");
+  const objectionSources = sigs.filter((s) => s.outcome === "lost" || s.source === "churn_note" || s.source === "review" || s.source === "support_ticket" || (s.source === "sales_call" && s.outcome !== "won"));
   const objections: Out["objections"] = [];
   for (const s of objectionSources) {
     const sentence = sentences(s.content).find((x) => OBJECTION.test(x));
     if (!sentence || objections.length >= 4) continue;
     const kind = sentence.match(OBJECTION)![0].toLowerCase();
     // Labels name the kind of pushback only; the quote under each says the specifics.
-    const label = /price|pricing|cost|expensive|cheaper|budget|per-tech|justify/.test(kind)
+    const label = /price|pricing|cost|expensive|steep|cheaper|budget|per-tech|justify/.test(kind)
       ? "Price"
       : /left for|competitor|bundles/.test(kind)
         ? "Lost to a competitor or a bundle"
@@ -180,10 +207,10 @@ function offline(rc: RunContext): Out {
   }
 
   // The test leads with what closed, or with the phrase behind the top change; never with a phrase that didn't make the memo.
-  const topChange = changes[0] ? /“([^”]+)”/.exec(changes[0].claim)?.[1] ?? null : null;
+  const topChange = changes[0] && !noTheme ? /“([^”]+)”/.exec(changes[0].claim)?.[1] ?? null : null;
   const angle = winning ?? topChange;
   return {
-    headline: headline ?? (changes[0] ? changes[0].claim : ""),
+    headline: headline ?? (changes[0] ? `${changes[0].claim.slice(OFFLINE_THEME.length + 2).replace(/\.$/, "")} (offline phrase match, unverified).` : ""),
     changes,
     language: phrases.slice(0, 5).map((p) => {
       const words = surface(p.phrase, texts);
@@ -201,7 +228,7 @@ function offline(rc: RunContext): Out {
           why_this_week: winning ? "It's what the deals we won had in common." : "It's the most repeated phrase this week.",
         }
       : { name: "", hypothesis: "", angle: "", channel: "other", metric: "", why_this_week: "" },
-    confidence_note: won.length + lost.length ? `Deal outcome known for ${won.length} won and ${lost.length} lost` : "No deal outcomes recorded yet",
+    confidence_note: `${won.length + lost.length ? `Deal outcome known for ${won.length} won and ${lost.length} lost` : "No deal outcomes recorded yet"}. Written offline by phrase matching, not a model: check each quote.`,
   };
 }
 

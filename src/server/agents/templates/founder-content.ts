@@ -3,7 +3,7 @@ import type { AgentTemplate, DraftInput, RunContext } from "../types";
 import type { SignalLite } from "../evidence";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
-import { clip, sentences, tokens, topPhrases } from "../text";
+import { clip, LOSS_WORDS, sentences, tokens, topPhrases } from "../text";
 import { bullets, ev, findBanned, findSentence, parseBanned, renderBanned, retell, techsOf, words } from "./guardrails";
 import { countBySource, draftTitle, fromSignals, meta, shippable } from "../format";
 
@@ -67,10 +67,27 @@ function voiceLine(rc: RunContext, about: string): string | null {
 const MONEY = /\$\s?\d[\d,]{2,}/;
 const OWN_WORDS = /\bwe (know|just|can't|cannot|lose|need)\b|\bour\b.*\b(leak|biggest)\b/i;
 
-/** A signal the offline writer can build a post from on its own: a dollar figure, a churn story, or a buyer's own words. */
+const SOURCE_NOUN: Record<string, string> = {
+  crm_note: "a demo request", review: "a review", social: "a public post", survey: "a survey", sales_call: "a sales call", support_ticket: "a support ticket", churn_note: "an exit call", interview: "an interview",
+};
+
+/**
+ * The sentence carrying a dollar figure the signal itself calls a loss or a cost ("lost a $48k job"),
+ * or null. A bare price ("$149 per tech is steep") is not a loss and never becomes one.
+ */
+export function lossSentence(s: SignalLite): string | null {
+  const ss = sentences(s.content);
+  for (let i = 0; i < ss.length; i++) {
+    if (!MONEY.test(ss[i]!)) continue;
+    if (LOSS_WORDS.test(ss[i]!)) return ss[i]!;
+  }
+  return null;
+}
+
+/** A signal the offline writer can build a post from on its own: a stated loss in dollars, a churn story, or a buyer's own words. */
 export function postable(s: SignalLite) {
   if (s.source === "churn_note") return true;
-  if (findSentence(s, MONEY)) return true;
+  if (lossSentence(s)) return true;
   return ["crm_note", "review", "social", "survey"].includes(s.source) && !s.metadata?.trigger && Boolean(findSentence(s, OWN_WORDS));
 }
 
@@ -97,7 +114,7 @@ function offline(rc: RunContext): Out {
         title: `What closes vs. what's loudest`,
         hook: `What buyers open with is not what they buy.`,
         body: text,
-        insight: `Buyers raise ${pretty(loud.phrase)} first, but the deals that close are decided on ${pretty(wonP.phrase)}.`,
+        insight: `${openers.length} of ${calls.length} sales calls brought up ${pretty(loud.phrase)}; ${closers.length} of the ${won.length} won deals talked about ${pretty(wonP.phrase)}.`,
         angle: pretty(wonP.phrase),
         evidence: [{ signal_id: both.id, quote: q }, ...openers.filter((s) => s.id !== both.id).slice(0, 1).flatMap((s) => ev(s, new RegExp(loud.phrase.split(" ")[0]!, "i")))],
       });
@@ -105,33 +122,34 @@ function offline(rc: RunContext): Out {
     }
   }
 
-  // 2. A number from the field: the most expensive miss anyone told us about.
+  // 2. A number from the field: the largest loss someone told us about, in dollars, in their words.
+  // Only a figure the signal itself calls lost, missed or a cost; a price is never framed as a loss.
   const money = sigs
     .filter((s) => !used.has(s.id))
-    .map((s) => ({ s, q: findSentence(s, MONEY) }))
+    .map((s) => ({ s, q: lossSentence(s) }))
     .filter((x): x is { s: SignalLite; q: string } => Boolean(x.q))
     .sort((a, b) => Number(/\d[\d,]+/.exec(b.q)![0].replace(/,/g, "")) - Number(/\d[\d,]+/.exec(a.q)![0].replace(/,/g, "")))[0];
   if (money) {
     const amount = /\$\s?\d[\d,]+/.exec(money.q)![0];
-    const after = sentences(money.s.content).slice(sentences(money.s.content).indexOf(money.q) + 1, sentences(money.s.content).indexOf(money.q) + 3);
+    const all = sentences(money.s.content);
+    const after = all.slice(all.indexOf(money.q) + 1, all.indexOf(money.q) + 3);
     const followUp = /follow/i.test(money.q);
     const vl = voiceLine(rc, money.s.content);
+    const said = retell(bare(money.q), money.s);
     posts.push({
       platform: "linkedin",
-      title: followUp ? `The ${amount} quote nobody sent` : `The ${amount} nobody reported`,
-      hook: followUp ? `${amount}. That's what one quote nobody sent cost a contractor last quarter.` : `${amount}, gone, and it never showed up on a report.`,
+      title: followUp ? `The ${amount} follow-up` : `A ${amount} loss, in their words`,
+      hook: clip(said, 220),
       body: [
-        `${retell(money.q, money.s)}`,
         after.map((a) => retell(a, money.s)).join(" "),
-        // This paragraph is about a quote that never went out; only say it when the note says so.
-        followUp ? `The tech did his job: he spotted it. The quote just had nowhere to go. That gap between the truck and the office is where replacement revenue disappears, and it never shows up on a report.` : null,
-        vl ? `I keep coming back to this: ${vl}` : followUp ? `If the follow-up depends on someone remembering, it depends on luck.` : null,
-        `How does your shop make sure the quote actually goes out?`,
+        followUp ? `If the follow-up depends on someone remembering, it depends on luck.` : null,
+        vl ? `I keep coming back to this: ${vl}` : null,
+        followUp ? `How does your shop make sure the quote actually goes out?` : `Has your shop put a number on this?`,
       ]
         .filter(Boolean)
         .join("\n\n"),
-      insight: `A single missed follow-up after a service call can cost more than a year of software (${amount} in one case).`,
-      angle: "lost replacement revenue",
+      insight: `“${clip(bare(money.q), 220)}”`,
+      angle: followUp ? "the cost of a missed follow-up" : "a loss customers can name",
       evidence: [{ signal_id: money.s.id, quote: money.q }, ...after.slice(0, 1).map((a) => ({ signal_id: money.s.id, quote: a }))],
     });
     used.add(money.s.id);
@@ -145,13 +163,14 @@ function offline(rc: RunContext): Out {
   if (own) {
     const said = bare(own.q).replace(/^We\b/, "we");
     const t = techsOf(own.s);
+    const leak = /\b(leak|lose|losing|lost|miss(ed|ing)?|on the table)\b/i.test(own.q);
     posts.push({
       platform: "x",
-      title: "The leak buyers can't count",
+      title: leak ? "The leak buyers can't count" : "A buyer, in their own words",
       hook: `"${said.charAt(0).toUpperCase()}${said.slice(1).replace(/\.$/, "")}."`,
-      body: `${t ? `A ${t}-tech shop` : "A contractor"} wrote that on a demo request this week.\n\nYou can't fix a leak you can't count. Count it first.`,
-      insight: `Buyers already suspect the leak; what they lack is a number.`,
-      angle: "make the leak visible",
+      body: `${t ? `A ${t}-tech shop` : "A contractor"} wrote that in ${SOURCE_NOUN[own.s.source] ?? "a note"} this week.${leak ? "\n\nYou can't fix a leak you can't count. Count it first." : ""}`,
+      insight: `A buyer wrote: “${clip(said.charAt(0).toUpperCase() + said.slice(1), 220)}”`,
+      angle: leak ? "make the leak visible" : "the buyer's own words",
       evidence: [{ signal_id: own.s.id, quote: own.q }],
     });
     used.add(own.s.id);
@@ -180,7 +199,7 @@ function offline(rc: RunContext): Out {
       ]
         .filter(Boolean)
         .join("\n\n"),
-      insight: aboutMoney ? `Customers who never see the revenue upside churn, even when the product works.` : `Customers who skip a key setup step churn.`,
+      insight: `A churned customer said: “${clip(bare(why), 220)}”`,
       angle: aboutMoney ? "show the money in week one" : "onboarding is the product",
       evidence: [{ signal_id: churn.id, quote: why }, ...(regret ? [{ signal_id: churn.id, quote: regret }] : [])],
     });
@@ -211,8 +230,8 @@ function offline(rc: RunContext): Out {
           practices.map((p, i) => `${i + 1}. ${p.text}`).join("\n"),
           `None of this needs a new hire. It needs the follow-up to start before the truck leaves the driveway.`,
         ].join("\n\n"),
-        insight: `Owners are asking in public how to track replacement opportunities; customers who solved it describe the same few habits.`,
-        angle: "every completed job creates the next quote",
+        insight: `${where}: “${clip(question.q, 200)}”`,
+        angle: "answer a public question",
         evidence: [{ signal_id: question.s.id, quote: question.q }, ...practices.map((p) => ({ signal_id: p.s.id, quote: p.q }))],
       });
     }
@@ -260,7 +279,7 @@ export const founderContent: AgentTemplate<typeof Schema> = {
   readiness: {
     usable: postable,
     usableOfflineOnly: true,
-    usableNoun: "it can build a post from (a dollar figure, a churn reason, or a buyer's own words such as \"we lose\" or \"we need\")",
+    usableNoun: "it can build a post from (a dollar amount the note calls lost or a cost, a churn reason, or a buyer's own words such as \"we lose\" or \"we need\")",
   },
   spec: {
     mission: "Turn real customer pain into founder posts people in the industry would forward, in the founder's voice, every week.",

@@ -7,6 +7,7 @@ import { NAV_ITEMS, useBase } from "./nav";
 import { clearSampleAction, loadDemoAction, runAgentAction } from "@/app/(app)/actions";
 import { paletteContextAction, searchAction } from "@/app/(app)/actions-extra";
 import type { SearchResults } from "@/server/services/search";
+import { draftHref } from "@/lib/search-links";
 import { toast } from "./toast";
 import { cx, Kbd, plural } from "./ui";
 import { GO_CHORDS, ShortcutsSheet, draftCommands, openShortcuts, type DraftCommands } from "./shortcuts";
@@ -223,8 +224,12 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
           snippet: d.snippet ?? undefined,
           hint: STATUS[d.status] ?? d.status,
           icon: Inbox,
-          run: () => go(`/inbox?${["approved", "rejected"].includes(d.status) ? `tab=${d.status}&` : ""}d=${d.id}`),
+          run: () => go(draftHref(d)),
         })),
+      });
+      out.push({
+        name: "Memory",
+        items: data.docs.map((d) => ({ id: `m:${d.key}`, label: d.title, snippet: d.snippet ?? undefined, hint: d.folder, icon: FileText, run: () => go(`/memory?doc=${encodeURIComponent(d.key)}`) })),
       });
       out.push({
         name: "Signals",
@@ -235,7 +240,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
             label,
             hint: [SOURCE[s.source] ?? s.source, s.account].filter(Boolean).join(" · "),
             icon: MessageSquareQuote,
-            run: () => go(`/signals?id=${s.id}`),
+            run: () => go(`/signals?q=${encodeURIComponent(term)}&id=${s.id}`),
           };
         }),
       });
@@ -243,7 +248,6 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
         name: "Experiments",
         items: data.experiments.map((x) => ({ id: `x:${x.id}`, label: x.name, hint: STATUS[x.status] ?? x.status, icon: FlaskConical, run: () => go("/s/creative") })),
       });
-      out.push({ name: "Docs", items: data.docs.map((d) => ({ id: `m:${d.key}`, label: d.title, hint: d.folder, icon: FileText, run: () => go(`/memory?doc=${encodeURIComponent(d.key)}`) })) });
       nav.push(...data.agents.map((a) => ({ id: `a:${a.id}`, label: a.name, hint: "Agent", icon: Bot, run: () => go(`/agents/${a.id}`) })));
     }
     out.push({ name: "Go to", items: nav });
@@ -325,7 +329,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
                 choose(flat[sel]);
               }
             }}
-            placeholder={page === "run" ? "Which agent?" : page === "clear" ? "Clear the sample data?" : "Search drafts, signals, experiments, or type a command…"}
+            placeholder={page === "run" ? "Which agent?" : page === "clear" ? "Clear the sample data?" : "Search drafts, memory, signals, or type a command…"}
             style={{ outline: "none", boxShadow: "none" }}
             className="h-12 w-full min-w-0 border-0 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-3 focus:outline-none focus-visible:outline-none"
           />

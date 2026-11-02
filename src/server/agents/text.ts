@@ -20,7 +20,60 @@ export function tokens(text: string): string[] {
     .map((w) => (w.length > 4 && w.endsWith("ies") ? w.slice(0, -3) + "y" : w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
 }
 
-/** Top n-grams (2-3 words) by document frequency. */
+/**
+ * Words that make a phrase a fragment rather than a theme: units, quantities, filler nouns.
+ * "per tech" (from "50 min per tech" and "$149 per tech") is two prices, not something buyers keep raising.
+ */
+const FRAGMENT = new Set(
+  "per lot lots bit kind sort thing stuff way time day week year hour hr hrs min mins minute second percent dollar buck k one two three four five six seven eight nine ten dozen half couple each every much many few plus via etc".split(" "),
+);
+
+/**
+ * Whether an n-gram from `tokens()` is too weak to call a theme: any number or unit, a fragment word
+ * at either end, or no content word of 4+ letters.
+ */
+export function weakPhrase(phrase: string): boolean {
+  const ws = phrase.split(" ").filter(Boolean);
+  if (ws.length < 2) return true;
+  if (ws.some((w) => /\d/.test(w))) return true;
+  if (FRAGMENT.has(ws[0]!) || FRAGMENT.has(ws[ws.length - 1]!)) return true;
+  if (ws.filter((w) => !FRAGMENT.has(w)).length < 2) return true;
+  return !ws.some((w) => w.length >= 4 && !FRAGMENT.has(w));
+}
+
+/** Words that mark a sentence as a pain someone described, with weights. */
+const PAIN: [RegExp, number][] = [
+  [/\b(by hand|manual(ly)?|re-?route|re-?enter|double[- ]book|spreadsheet|whiteboard)\b/i, 3],
+  [/\b(have to|has to|takes? us|every (morning|day|week)|hours?|all day)\b/i, 2],
+  [/\b(steep|expensive|too high|can't afford|hard to justify|cheaper)\b/i, 2],
+  [/\b(drains?|crash(es|ed)?|slow|broken|bug|logs? (us|them|techs) out|freez(es|ing)|doesn't work|won't)\b/i, 2],
+  [/\b(lose|losing|lost|miss(ed|ing)?|forg[eo]t|never|can't|cannot|problem|issue|pain|frustrat\w*|annoy\w*|mess|waste\w*|late|runs? long)\b/i, 1],
+];
+
+/** How strongly a sentence reads as a described pain (0 = not at all). */
+export function painScore(sentence: string): number {
+  return PAIN.reduce((n, [re, w]) => n + (re.test(sentence) ? w : 0), 0);
+}
+
+/**
+ * The most pain-shaped verbatim sentence in each text, strongest first; one per text.
+ * Sentences shorter than `sentences()` allows are taken whole when the text is a single short line.
+ */
+export function strongestSentences<T extends { id: string; content: string }>(items: T[], n = 3): { item: T; sentence: string; score: number }[] {
+  const out: { item: T; sentence: string; score: number }[] = [];
+  for (const item of items) {
+    const ss = sentences(item.content);
+    const pool = ss.length ? ss : item.content.trim().length >= 12 && item.content.trim().length <= 320 ? [item.content.replace(/\s+/g, " ").trim()] : [];
+    const best = pool.map((sentence) => ({ sentence, score: painScore(sentence) })).sort((a, b) => b.score - a.score)[0];
+    if (best && best.score > 0) out.push({ item, ...best });
+  }
+  return out.sort((a, b) => b.score - a.score || b.sentence.length - a.sentence.length).slice(0, n);
+}
+
+/** Words that let a dollar figure be called a loss or a cost; without one, a figure is just a price. */
+export const LOSS_WORDS = /\b(lost|lose|loses|losing|loss|missed|miss|misses|cost|costs|costing|left on the table|never (got )?(sent|quoted|billed|followed up))\b/i;
+
+/** Top n-grams (2-3 words) by document frequency, skipping fragments such as "per tech" or "2 hour". */
 export function topPhrases(docs: string[], n = 12, minDocs = 2): { phrase: string; docs: number }[] {
   const df = new Map<string, number>();
   for (const d of docs) {
@@ -37,7 +90,7 @@ export function topPhrases(docs: string[], n = 12, minDocs = 2): { phrase: strin
       }
     }
   }
-  const ranked = [...df.entries()].filter(([, c]) => c >= minDocs).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
+  const ranked = [...df.entries()].filter(([g, c]) => c >= minDocs && !weakPhrase(g)).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
   const out: { phrase: string; docs: number }[] = [];
   for (const [phrase, c] of ranked) {
     const words = phrase.split(" ");
