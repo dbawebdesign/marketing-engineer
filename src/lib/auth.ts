@@ -1,3 +1,4 @@
+import { trustedIp } from "./client-ip";
 import "server-only";
 import { cookies, headers } from "next/headers";
 export { hashPassword, verifyPassword } from "./password";
@@ -15,7 +16,8 @@ export async function createSession(userId: string, tenantId: string | null, kin
   const t = token();
   const ttlMs = kind === "web" ? WEB_TTL_DAYS * 864e5 : EMBED_TTL_HOURS * 36e5;
   const h = await headers();
-  const ip = (h.get("x-forwarded-for") ?? "").split(",")[0]?.trim() || null;
+  const tip = trustedIp(h);
+  const ip = /^[0-9a-f.:]+$/i.test(tip) ? tip : null;
   await sys(
     `insert into sessions(id_hash, user_id, tenant_id, kind, expires_at, ip, user_agent) values ($1,$2,$3,$4,$5,$6,$7)`,
     [sha256(t), userId, tenantId, kind, new Date(Date.now() + ttlMs), ip && /^[0-9a-f.:]+$/i.test(ip) ? ip : null, h.get("user-agent")?.slice(0, 400) ?? null],

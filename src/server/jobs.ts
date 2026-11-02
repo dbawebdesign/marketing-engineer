@@ -15,6 +15,21 @@ export async function enqueue(tx: Tx | null, job: { tenantId: string | null; typ
 export type Job = { id: string; tenant_id: string | null; type: string; payload: Record<string, unknown>; attempts: number; max_attempts: number };
 
 export async function claim(workerId: string): Promise<Job | null> {
+  const job = await claimOne(workerId);
+  if (!job || !job.tenant_id) return job;
+  // Concurrent claims can each see room under the cap; re-check and hand back the extra.
+  const n = await sys<{ n: number }>(
+    `select count(*)::int n from jobs where tenant_id = $1 and status = 'running' and (locked_at, id) <= (select locked_at, id from jobs where id = $2)`,
+    [job.tenant_id, job.id],
+  );
+  if ((n.rows[0]?.n ?? 0) > TENANT_CONCURRENCY) {
+    await sys(`update jobs set status='queued', locked_at=null, locked_by=null, attempts=attempts-1, run_at=now() + interval '2 seconds' where id=$1`, [job.id]);
+    return null;
+  }
+  return job;
+}
+
+async function claimOne(workerId: string): Promise<Job | null> {
   const r = await sys<Job>(
     `update jobs set status='running', locked_at=now(), locked_by=$1, attempts=attempts+1
       where id = (select j.id from jobs j

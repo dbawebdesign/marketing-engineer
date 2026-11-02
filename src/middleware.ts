@@ -1,3 +1,4 @@
+import { CSP } from "@/lib/csp";
 import { NextResponse, type NextRequest } from "next/server";
 
 /**
@@ -69,7 +70,7 @@ export function middleware(req: NextRequest) {
     headers.set(EMBED_HEADER, "1");
     res = NextResponse.rewrite(url, { request: { headers } });
   }
-  res.headers.set("Content-Security-Policy", `frame-ancestors ${frameAncestors()}`);
+  res.headers.set("Content-Security-Policy", `${CSP}; frame-ancestors ${frameAncestors()}`);
   return res;
 }
 

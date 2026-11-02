@@ -20,8 +20,15 @@ describe("hardening", () => {
   });
 
   it("takes the client IP from the trusted proxy hop, not the left-most XFF entry", () => {
-    expect(trustedIp(hdr({ "x-forwarded-for": "6.6.6.6, 10.0.0.9" }))).toBe("10.0.0.9");
-    expect(trustedIp(hdr({}))).toBe("direct");
+    // Default: no trusted proxy, so forwarding headers are ignored entirely.
+    expect(trustedIp(hdr({ "x-forwarded-for": "6.6.6.6" }))).toBe("direct");
+    process.env.TRUSTED_PROXY_COUNT = "1";
+    try {
+      expect(trustedIp(hdr({ "x-forwarded-for": "6.6.6.6, 10.0.0.9" }))).toBe("10.0.0.9");
+      expect(trustedIp(hdr({}))).toBe("direct");
+    } finally {
+      delete process.env.TRUSTED_PROXY_COUNT;
+    }
   });
 
   it("never lets an embed actor manage settings, keys or members, whatever its role", () => {

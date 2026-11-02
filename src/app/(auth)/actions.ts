@@ -18,7 +18,7 @@ export async function loginAction(_: AuthState, form: FormData): Promise<AuthSta
   const email = String(form.get("email") ?? "");
   const password = String(form.get("password") ?? "");
   const fields = { email };
-  if (!limit(await ipKey("login"), 10, 60) || !limit(`login:${email.trim().toLowerCase().slice(0, 254)}`, 10, 300))
+  if (!limit(await ipKey("login-ip"), 10, 60) || !limit(`login-email:${email.trim().toLowerCase().slice(0, 254)}`, 10, 300) || !limit("login-global", 300, 60))
     return { error: "Too many attempts. Wait a minute and try again.", fields };
   const r = await login(email, password);
   if (!r) return { error: "That email and password don't match.", fields };
@@ -29,7 +29,7 @@ export async function loginAction(_: AuthState, form: FormData): Promise<AuthSta
 export async function signupAction(_: AuthState, form: FormData): Promise<AuthState> {
   const data = Object.fromEntries(["name", "email", "password", "company"].map((k) => [k, String(form.get(k) ?? "")]));
   const fields = { name: data.name!, email: data.email!, company: data.company! };
-  if (!limit(await ipKey("signup"), 5, 300)) return { error: "Too many sign-ups from this network. Try again later.", fields };
+  if (!limit(await ipKey("signup-ip"), 5, 300) || !limit("signup-global", 60, 300)) return { error: "Too many sign-ups from this network. Try again later.", fields };
   try {
     const { userId, tenantId } = await signup(data);
     await createSession(userId, tenantId);

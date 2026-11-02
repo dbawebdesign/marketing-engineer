@@ -60,7 +60,7 @@ It implements the six systems of the marketing engineer role:
 - Embedded users never reach workspace administration (secrets, API keys, members, settings), whatever role the host grants. Embed start refuses top-level navigation; rotating the secret ends embed sessions.
 - Agent output never loads remote images, and a Content Security Policy limits every page to same-origin images, fonts and requests, so prompt-injected content cannot exfiltrate data. Untrusted signal text is escaped in prompts and treated as data.
 - Spend and fairness: schedules run at most hourly, a busy agent skips its slot, each workspace has a daily run budget (`ME_DAILY_RUN_LIMIT`, default 100) and a job concurrency cap (`ME_TENANT_CONCURRENCY`, default 2).
-- Rate limits key on the trusted proxy hop (`TRUSTED_PROXY_COUNT`, default 1), not the client-supplied X-Forwarded-For. Webhooks reject unsigned requests before reading the body.
+- Rate limits key on the trusted proxy hop (`TRUSTED_PROXY_COUNT`, default 0; set it to the number of proxies in front of the app), not the client-supplied X-Forwarded-For. Webhooks reject unsigned requests before reading the body.
 - Append-only audit log (the app role cannot update or delete it) for every write, secret reveal and rotation, and workspace change. Security headers and frame-ancestors on every response.
 
 See [docs/API.md](docs/API.md) for the REST API, webhooks and embedding.
