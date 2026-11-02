@@ -736,7 +736,7 @@ export function FirstRun({
             : // Exactly what this agent reads and what's missing, from its own readiness.
               readiness!.reads === "metrics"
               ? "Send metric events tagged by angle from your stack with an API key, then run it."
-              : `${agentName} ${(needsLine({ ...readiness!, reason: readiness!.reason ?? null }) ?? "Needs more to read").replace(/^Needs/, "needs")}. Add that on Signals, then run it.`}
+              : `${agentName} ${(needsLine({ ...readiness!, reason: readiness!.reason ?? null }) ?? "Needs more to read").replace(/^Needs/, "needs")}. ${/still empty/.test(readiness!.reason ?? "") ? "Fill that in on Memory" : "Add that on Signals"}, then run it.`}
         </p>
         {canLoadSamples ? (
           <div className="mt-5">

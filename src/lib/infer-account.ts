@@ -7,7 +7,7 @@ export function inferAccount(text: string): string | null {
   const line = text.split("\n").find((l) => l.trim())?.trim() ?? "";
   if (!line) return null;
   let name: string | null = null;
-  const withM = line.match(/^(?:(?:sales|discovery|intro|demo|support|churn|qbr|renewal|follow-up)\s+)?(?:call|meeting|chat|demo|interview|sync|notes?)\s+(?:with|w\/)\s+(.+?)(?:\s*[:(—–]|\s-\s|[.,;]|$)/i);
+  const withM = line.match(/^(?:(?:sales|discovery|intro|demo|support|churn|qbr|renewal|follow-up)\s+)?(?:call|meeting|chat|demo|interview|sync|notes?)\s+(?:with|w\/)\s+(.+?)(?:\s*[:(—–]|\s-\s|[.;]|,(?!\s*[A-Z0-9][^,:]*:)|$)/i);
   // "Support ticket from Northwind Plumbing: …", "Churn reason — Fairway Electric: …", "Cancelled: Summit Roofing …"
   const LABEL = String.raw`(?:support\s+)?ticket(?:\s*#?\d+)?|support|churn(?:\s+(?:reason|note))?|cancell?ation|cancell?ed|crm\s+note|note`;
   const fromM = !withM && line.match(new RegExp(String.raw`^(?:${LABEL})\s+(?:from|by|for|re:?)\s+(.+?)(?:\s*[:(—–]|\s-\s|[.,;]|$)`, "i"));
@@ -25,6 +25,9 @@ export function inferAccount(text: string): string | null {
   // "Jane Doe at Polar Mechanical" / "Jane from Polar Mechanical": the company is the account.
   const at = name.match(/\s(?:at|from|@)\s+(.+)$/i);
   if (at) name = at[1]!;
+  // "Dan Ortiz, Bluefin HVAC": person first, company after the comma.
+  const comma = name.match(/^[^,]+,\s*(.+)$/);
+  if (comma) name = comma[1]!;
   name = name.replace(/\s+(?:today|yesterday|this week|last week)$/i, "").replace(/^the\s+/i, "").trim();
   if (name.length < 2 || name.length > 60 || name.split(/\s+/).length > 6) return null;
   return name;
