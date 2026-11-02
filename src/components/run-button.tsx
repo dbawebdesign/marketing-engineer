@@ -5,7 +5,7 @@ import { Play, LoaderCircle, Plus } from "lucide-react";
 import type { Readiness } from "@/server/agents/readiness";
 import { runAgentAction, runStatusAction } from "@/app/(app)/actions";
 import { runFirstDraftAction } from "@/app/(app)/actions-extra";
-import { Button, buttonClass, cx } from "./ui";
+import { Button, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
 import { L, useBase } from "./nav";
 
@@ -157,5 +157,45 @@ export function AgentRun({
         <Plus size={14} aria-hidden /> Add signals
       </L>
     </span>
+  );
+}
+
+/**
+ * Starts several agents at once (e.g. everything downstream of a newly approved memo).
+ * The page's live refresh shows each one working, and their drafts as they land.
+ */
+export function RunAllButton({
+  agents,
+  label,
+  className,
+}: {
+  agents: { id: string; activeRunId?: string | null }[];
+  label: string;
+  className?: string;
+}) {
+  const [pending, start] = useTransition();
+  const router = useRouter();
+  const going = agents.some((a) => a.activeRunId);
+  const busy = pending || going;
+  return (
+    <Button
+      variant="primary"
+      disabled={busy}
+      aria-busy={busy}
+      className={cx("max-w-full", busy && "disabled:opacity-80", className)}
+      onClick={() =>
+        start(async () => {
+          const todo = agents.filter((a) => !a.activeRunId);
+          const results = await Promise.all(todo.map((a) => runAgentAction(a.id).catch(() => ({ ok: false as const, error: "Couldn't start the run." }))));
+          const failed = results.filter((r) => !r.ok);
+          if (failed.length === results.length) toast.error(failed[0] && !failed[0].ok ? failed[0].error : "Couldn't start the runs.");
+          else toast.ok(`${plural(results.length - failed.length, "agent")} working. Drafts land in your inbox.`);
+          router.refresh();
+        })
+      }
+    >
+      {busy ? <LoaderCircle size={14} className="animate-spin motion-reduce:animate-none" /> : <Play size={13} className="fill-current" />}
+      <span aria-live="polite" className="truncate">{busy ? "Agents working…" : label}</span>
+    </Button>
   );
 }

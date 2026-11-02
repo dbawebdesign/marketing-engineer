@@ -7,7 +7,9 @@ import { Markdown } from "@/components/markdown";
 import { DocEditor } from "@/components/doc-editor";
 import { ChipScroller } from "@/components/chip-scroller";
 import { cx, timeAgo } from "@/components/ui";
-import { creditFor } from "@/lib/doc-credit";
+import { creditFor, updatedLine } from "@/lib/doc-credit";
+import { docReceipts } from "@/server/services/doc-receipts";
+import { ReceiptMarkdown } from "@/components/receipt-markdown";
 import { INTRO_FIELDS } from "@/lib/intro-fields";
 
 export const metadata = { title: "Memory" };
@@ -26,7 +28,9 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
   const current = keys.includes(sp.doc ?? "") ? sp.doc! : (keys.find((k) => byKey.get(k)?.content.trim()) ?? keys[0]!);
   const doc = byKey.get(current);
   const preset = GROWTH_OS.find((g) => g.key === current);
-  const history = doc ? await docHistory(ctx, current) : [];
+  const [allHistory, receipts] = doc ? await Promise.all([docHistory(ctx, current), docReceipts(ctx, current).catch(() => [])]) : [[], []];
+  // The empty skeleton a doc starts as isn't a version anyone wrote.
+  const history = allHistory.filter((h) => h.content.trim());
   const folders = new Map<string, string[]>();
   for (const k of keys) {
     const raw = byKey.get(k)?.folder ?? GROWTH_OS.find((g) => g.key === k)?.folder ?? "Notes";
@@ -105,7 +109,7 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
           <DocEditor
             key={`${current}:${sp.edit === "1" ? "edit" : "view"}`}
             title={title}
-            meta={hasContent ? `v${doc!.version} · ${creditFor(history[0]) ? `${creditFor(history[0])} · ` : ""}${timeAgo(doc!.updated_at)}` : null}
+            meta={hasContent ? updatedLine(doc!.updated_at, history[0]) : null}
             startEditing={sp.edit === "1"}
             docKey={current}
             content={doc?.content ?? ""}
@@ -114,7 +118,13 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
             template={DOC_TEMPLATES[current]}
             agentWritten={AGENT_WRITTEN.has(current)}
             canEdit={canEdit}
-            preview={hasContent ? <Markdown>{doc!.content}</Markdown> : <p className="text-[14px] text-ink-3">{preset?.hint ?? "Empty."}</p>}
+            preview={
+              hasContent ? (
+                receipts.length ? <ReceiptMarkdown receipts={receipts}>{doc!.content}</ReceiptMarkdown> : <Markdown>{doc!.content}</Markdown>
+              ) : (
+                <p className="text-[14px] text-ink-3">{preset?.hint ?? "Empty."}</p>
+              )
+            }
           />
           {history.length > 1 ? (
             <section className="mt-12">

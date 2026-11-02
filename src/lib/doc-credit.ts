@@ -8,3 +8,15 @@ export function creditFor(v: { author_kind: string; person: string | null; agent
   if (v.author_kind === "user") return v.person ? `Edited by ${v.person}` : "Edited";
   return "Setup";
 }
+
+/**
+ * The doc header's one line, without version numbers (those stay in History):
+ * "Updated Nov 2 · Approved by Maya", "Updated Nov 2 · Edited by Maya", "Updated Nov 2".
+ */
+export function updatedLine(updatedAt: string | Date, v: { author_kind: string; person: string | null } | null | undefined) {
+  const d = new Date(updatedAt);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  const when = d.toLocaleDateString("en-US", { month: "short", day: "numeric", ...(sameYear ? {} : { year: "numeric" }) });
+  const who = !v || !v.person ? null : v.author_kind === "agent" ? `Approved by ${v.person}` : v.author_kind === "user" ? `Edited by ${v.person}` : null;
+  return `Updated ${when}${who ? ` · ${who}` : ""}`;
+}

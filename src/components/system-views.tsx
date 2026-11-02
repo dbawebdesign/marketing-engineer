@@ -1,12 +1,11 @@
-import { ArrowRight, ChevronDown, Pencil, Plus } from "lucide-react";
+import { ArrowRight, ChevronDown, Pencil } from "lucide-react";
 import type { Draft } from "@/server/services/drafts";
 import type { Experiment } from "@/server/services/experiments";
 import { L } from "./nav";
-import { Markdown } from "./markdown";
+import { ReceiptMarkdown } from "./receipt-markdown";
 import { CopyButton } from "./copy-button";
 import { DraftPreview } from "./draft-preview";
 import { DemoButton } from "./demo-button";
-import { RunButton } from "./run-button";
 import { ExperimentActions } from "./experiment-actions";
 import { metaOf } from "@/lib/draft-meta";
 import { fmtScore } from "@/lib/experiment-results";
@@ -20,7 +19,7 @@ export function Block({ title, meta, children, className }: { title?: React.Reac
     <section className={cx("mb-12", className)}>
       {title || meta ? (
         <div className="mb-3 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-          {title ? <h2 className="text-[15px] font-semibold tracking-[-0.01em] text-ink">{title}</h2> : <span />}
+          {title ? <h2 className="text-[14px] font-semibold text-ink">{title}</h2> : <span />}
           {meta ? <div className="text-[13px] text-ink-3">{meta}</div> : null}
         </div>
       ) : null}
@@ -72,6 +71,7 @@ export function PendingBlock({ drafts, slug, preview = false }: { drafts: Draft[
           body={first.body}
           meta={metaOf(first.payload)}
           createdAt={first.created_at}
+          sample={!!first.is_sample}
           href={systemInboxHref(slug, first)}
           label={drafts.length > 1 ? `${plural(drafts.length, noun[0], noun[1])} waiting · next up` : "Waiting for your review"}
         />
@@ -115,7 +115,8 @@ export function DocView({
   pending,
   slug,
   idle,
-  credit,
+  updated,
+  receipts = [],
   editHref,
 }: {
   doc: { content: string; version: number; updated_at: string } | null;
@@ -123,8 +124,10 @@ export function DocView({
   pending: Draft[];
   slug: string;
   idle: { title: string; body: string };
-  /** Who stands behind the current version, e.g. "Approved by Maya". */
-  credit?: string | null;
+  /** "Updated Nov 2 · Approved by Maya". */
+  updated?: string | null;
+  /** The evidence behind the doc: its quotes open their signals. */
+  receipts?: { signal_id: string; quote: string }[];
   /** Where to edit the document by hand, when the viewer may. */
   editHref?: string | null;
 }) {
@@ -138,10 +141,7 @@ export function DocView({
           meta={
             has ? (
               <span className="flex items-center gap-3">
-                <span>
-                  v{doc!.version} · {credit ? `${credit} · ` : ""}
-                  {timeAgo(doc!.updated_at)}
-                </span>
+                <span className="tnum">{updated}</span>
                 {editHref ? (
                   <L href={editHref} className={buttonClass("secondary", "sm")}>
                     <Pencil size={13} aria-hidden /> Edit
@@ -153,7 +153,7 @@ export function DocView({
         >
           {has ? (
             <div className={cx(card, "p-6 sm:p-8")}>
-              <Markdown>{doc!.content}</Markdown>
+              <ReceiptMarkdown receipts={receipts}>{doc!.content}</ReceiptMarkdown>
             </div>
           ) : (
             <ArtifactEmpty idle={idle} />
@@ -342,7 +342,7 @@ const rank = (s: string) => (EXP_ORDER.includes(s) ? EXP_ORDER.indexOf(s) : 99);
 const EXP_LABEL: Record<string, string> = { running: "Running", draft: "Not started", won: "Won", lost: "Lost" };
 
 /** The angle a queued test is about: what Hook lab writes hooks for. */
-const testAngle = (e: Experiment) => {
+export const testAngle = (e: Pick<Experiment, "variants" | "hypothesis" | "name">) => {
   const v = e.variants[0];
   return (v?.angle ?? v?.label ?? "").trim() || (e.hypothesis ? `${e.name}: ${e.hypothesis}` : e.name);
 };
@@ -362,7 +362,7 @@ function ExperimentResults({ e }: { e: Experiment }) {
     );
   return (
     <div className="mt-3 max-w-xl" data-experiment-results>
-      <p className="mb-1.5 text-[12.5px] text-ink-3">Decided by {r.unit}</p>
+      <p className="mb-1.5 text-[13px] text-ink-3">Decided by {r.unit}</p>
       <ul className="space-y-1.5">
         {arms.map((a) => {
           const lead = r.leader?.key === a.key;
@@ -381,7 +381,7 @@ function ExperimentResults({ e }: { e: Experiment }) {
           );
         })}
       </ul>
-      <p className="mt-1.5 text-[12.5px] text-ink-3 tnum">
+      <p className="mt-1.5 text-[13px] text-ink-3 tnum">
         {plural(arms.reduce((n, a) => n + a.clicks, 0), "click")} {e.status === "running" ? "since it started" : "while it ran"}
       </p>
     </div>
@@ -559,7 +559,7 @@ export function Coverage({ approved, pending }: { approved: Draft | undefined; p
             <span className="flex items-center gap-1.5"><span className="inline-block size-1.5 rounded-full bg-line-strong" /> {n.missing} missing</span>
             {!counted ? <span className="flex items-center gap-1.5 text-warn"><Dot tone="warn" /> pending review</span> : null}
           </p>
-          <p className="mt-3 text-[12.5px] text-ink-3">Not yet measured in AI assistants.</p>
+          <p className="mt-3 text-[13px] text-ink-3">Not yet measured in AI assistants.</p>
         </div>
       </section>
       <Block
@@ -647,58 +647,42 @@ export function AngleChart({ angles, days }: { angles: ({ angle: string } & Reco
 /* ---------------------------------------------------------------- first run */
 
 /**
- * Before an agent has anything to read (or anything to show): one calm panel with the
- * single next step, instead of an empty artifact under a Run button.
+ * Before an agent has made anything: what it will make and what it needs, in place of empty
+ * artifact views. The Run (or Add signals) control lives in the page header, as on every system page.
  */
 export function FirstRun({
-  agentId,
   agentName,
   readiness,
   noun,
   promise,
-  canRun,
   canLoadSamples,
-  activeRunId,
 }: {
-  agentId: string;
   agentName: string;
   readiness: { signals: number; need: number; days: number; ready: boolean; reads: "signals" | "metrics" } | null;
   noun: string;
   /** What the agent turns signals into, one sentence. */
   promise: string;
-  canRun: boolean;
   canLoadSamples: boolean;
-  activeRunId?: string | null;
 }) {
   const ready = !readiness || readiness.ready;
   const n = readiness?.signals ?? 0;
   return (
-    <section className={cx(card, "mb-12 px-6 py-10 sm:px-10 sm:py-12")}>
+    <section className="mb-12 rounded-xl border border-dashed border-line-strong px-6 py-8 sm:px-8">
       <div className="max-w-lg">
-        <h2 className="text-[17px] font-semibold tracking-[-0.01em] text-ink">
+        <h2 className="text-[14px] font-semibold text-ink">
           {ready ? `Ready to draft its first ${noun}` : n ? `Almost ready: ${plural(n, "signal")} so far` : `Give ${agentName} something to read`}
         </h2>
-        <p className="mt-2 text-[14px] leading-relaxed text-ink-2">
+        <p className="mt-1 text-[14px] leading-relaxed text-ink-2">
           {promise}{" "}
           {ready
             ? `It has ${plural(n, "signal")} from the last ${readiness?.days ?? 7} days to work from. Run it, then approve what it drafts.`
             : readiness!.reads === "metrics"
-              ? `It reads the last ${readiness!.days} days of metrics and signals, and there are none yet. Add signals here, or send metrics from your stack with an API key.`
+              ? `It reads the last ${readiness!.days} days of metrics and signals, and there are none yet. Add signals, or send metrics from your stack with an API key.`
               : `It drafts from the last ${readiness!.days} days and needs at least ${readiness!.need} signals. Paste call notes, tickets, reviews or churn reasons.`}
         </p>
-        {canRun ? (
-          <div className="mt-6 flex flex-wrap items-center gap-2">
-            {ready || activeRunId ? (
-              <RunButton agentId={agentId} size="md" label={`Run ${agentName}`} activeRunId={activeRunId} />
-            ) : (
-              <>
-                <L href="/signals?add=1" className={buttonClass("primary")}>
-                  <Plus size={14} aria-hidden /> Add signals
-                </L>
-                {canLoadSamples ? <DemoButton /> : null}
-                {n > 0 ? <RunButton agentId={agentId} size="md" label="Run anyway" variant="ghost" /> : null}
-              </>
-            )}
+        {canLoadSamples ? (
+          <div className="mt-5">
+            <DemoButton />
           </div>
         ) : null}
       </div>

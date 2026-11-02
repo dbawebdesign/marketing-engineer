@@ -32,13 +32,27 @@ export function AgentMeta({ agent, className }: { agent: Agent; className?: stri
 }
 
 /** Job spec, plus the agent's next action (Run, or Add signals when its window is too thin). `run={false}` when the page body already offers it. */
-export function AgentActions({ agent, canRun, run = true, quiet = false }: { agent: Agent; canRun: boolean; run?: boolean; /** Something is waiting for review: that's the primary action, not Run. */ quiet?: boolean }) {
+export function AgentActions({
+  agent,
+  canRun,
+  run = true,
+  quiet = false,
+  activeRunId,
+}: {
+  agent: Agent;
+  canRun: boolean;
+  run?: boolean;
+  /** Something is waiting for review: that's the primary action, not Run. */
+  quiet?: boolean;
+  /** A run already in flight: the control shows it working. */
+  activeRunId?: string | null;
+}) {
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex shrink-0 items-center gap-1.5">
       <L href={`/agents/${agent.id}`} className={buttonClass("ghost", "sm")}>
-        <SlidersHorizontal size={14} /> Job spec
+        <SlidersHorizontal size={14} aria-hidden /> Job spec
       </L>
-      {canRun && run ? <AgentRun agentId={agent.id} readiness={agent.readiness} quiet={quiet} /> : null}
+      {canRun && run ? <AgentRun agentId={agent.id} readiness={agent.readiness} quiet={quiet} activeRunId={activeRunId} /> : null}
     </div>
   );
 }

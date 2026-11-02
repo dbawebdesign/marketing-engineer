@@ -7,7 +7,8 @@ import { listExperiments, angleMetrics } from "@/server/services/experiments";
 import { signalStats } from "@/server/services/signals";
 import { SYSTEM_META } from "@/server/agents/types";
 import { SYSTEM_SLUGS, type SystemSlug } from "@/lib/systems";
-import { creditFor } from "@/lib/doc-credit";
+import { updatedLine } from "@/lib/doc-credit";
+import { docReceipts } from "@/server/services/doc-receipts";
 import { can } from "@/lib/rbac";
 import { AgentActions, AgentMeta } from "@/components/agent-card";
 import { AngleChart, Coverage, CreativeBatch, DocView, DraftsList, ExperimentBoard, FirstRun, OutboundQueue, PendingBlock, PostsLibrary } from "@/components/system-views";
@@ -53,13 +54,14 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
   const ctx = await requireCtx();
   const meta = SYSTEM_META[system];
   const docKey = system === "customer_truth" ? "customer-truth/what-the-market-is-telling-us" : system === "growth_cockpit" ? "cockpit/weekly-brief" : null;
-  const [agents, drafts, doc, history, experiments, stats] = await Promise.all([
+  const [agents, drafts, doc, history, experiments, stats, receipts] = await Promise.all([
     listAgents(ctx, { readiness: true }),
     listDrafts(ctx, { system, limit: system === "outbound_signal" ? 100 : 60 }),
     docKey ? getDoc(ctx, docKey) : null,
     docKey ? docHistory(ctx, docKey).catch(() => []) : [],
     system === "creative_testing" ? listExperiments(ctx, 30) : [],
     signalStats(ctx),
+    docKey ? docReceipts(ctx, docKey).catch(() => []) : [],
   ]);
   const mine = agents.filter((a) => a.system === system);
   // The chart reads the same window the cockpit agent reads.
@@ -94,7 +96,8 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
       pending={pendingOf(noun)}
       slug={slug}
       idle={idle}
-      credit={creditFor(history[0])}
+      updated={doc ? updatedLine(doc.updated_at, history[0]) : null}
+      receipts={receipts}
       editHref={docKey && can(ctx.role, "memory:write") ? `/memory?doc=${encodeURIComponent(docKey)}&edit=1` : null}
     />
   );
@@ -105,15 +108,16 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0">
             <h1 className="text-[26px] font-semibold tracking-[-0.02em] text-ink">{meta.label}</h1>
-            <p className="mt-1 max-w-2xl text-[15px] text-ink-2">{meta.blurb}</p>
+            <p className="mt-1 max-w-2xl text-[14px] text-ink-2">{meta.blurb}</p>
           </div>
-          {mine.length === 1 ? <AgentActions agent={mine[0]!} canRun={canRun} run={!firstRun} quiet={quiet} /> : null}
+          {/* One Run control, same place on every system page: secondary while something waits for review. */}
+          {lead ? <AgentActions agent={lead} canRun={canRun} quiet={quiet} activeRunId={running} /> : null}
         </div>
-        <div className="mt-4 space-y-2">
-          {mine.map((a) => (
+        <div className="mt-3 space-y-2">
+          {mine.map((a, i) => (
             <div key={a.id} className="flex flex-wrap items-center justify-between gap-2">
               <AgentMeta agent={a} />
-              {mine.length > 1 ? <AgentActions agent={a} canRun={canRun} quiet={quiet} /> : null}
+              {i > 0 ? <AgentActions agent={a} canRun={canRun} quiet /> : null}
             </div>
           ))}
           {!mine.length ? <p className="text-[13px] text-ink-3">No agent runs this system yet. An admin can add one from Agents.</p> : null}
@@ -124,14 +128,11 @@ export default async function SystemPage({ params }: { params: Promise<{ system:
         <>
           {system === "growth_cockpit" ? <AngleChart angles={angles} days={days} /> : null}
           <FirstRun
-            agentId={lead!.id}
             agentName={lead!.name}
             readiness={lead!.readiness}
             noun={FIRST[system].noun}
             promise={FIRST[system].promise}
-            canRun={canRun}
             canLoadSamples={totalSignals === 0 && can(ctx.role, "settings:manage")}
-            activeRunId={running}
           />
         </>
       ) : (
