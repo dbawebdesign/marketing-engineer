@@ -176,8 +176,8 @@ const Row = memo(function Row({ d, on, out, isNew, tagSample, href, onOpen }: { 
           <span className={cx("line-clamp-2 text-[14px] leading-snug", "text-ink", (isNew || on) && "font-medium")}>{d.title}</span>
           <span className="mt-1 flex flex-wrap items-center gap-x-1 text-xs text-ink-3">
             <span>
+              {/* Title, system and age only: the agent and receipts live in the detail header. */}
               {d.systemShort} · {timeAgo(d.created_at)}
-              {d.receipts ? ` · ${plural(d.receipts, "receipt")}` : ""}
             </span>
             {tagSample ? <SampleTag className="ml-1" /> : null}
           </span>

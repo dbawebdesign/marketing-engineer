@@ -41,14 +41,14 @@ export function WorkspaceMenu({
       <button
         ref={btn}
         onClick={() => setOpen((o) => !o)}
-        className={cx("flex items-center gap-2.5 rounded-lg px-2 text-left hover:bg-subtle", compact ? "h-10 max-w-full" : "min-h-10 w-full py-1.5")}
+        className={cx("flex items-center gap-2.5 rounded-lg px-2 text-left hover:bg-subtle", compact ? "h-10 max-w-full" : "h-10 w-full")}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={`Workspace: ${current.name}`}
       >
         <Logo />
-        {/* The sidebar has room for two lines: a long workspace name wraps instead of cutting off. */}
-        <span className={cx("min-w-0 text-[14px] font-semibold tracking-tight", compact ? "truncate" : "line-clamp-2 flex-1 break-words leading-snug")} title={current.name}>
+        {/* One line, cut off with an ellipsis; the full name is in the tooltip. */}
+        <span className={cx("min-w-0 truncate text-[14px] font-semibold tracking-tight", !compact && "flex-1")} title={current.name}>
           {current.name}
         </span>
         <ChevronDown size={14} className="shrink-0 text-ink-3" />

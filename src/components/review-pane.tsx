@@ -527,9 +527,14 @@ export function ReviewPane({
               <Button variant="ghost" className="ml-auto" aria-label="Copy draft" onClick={() => copyText(body)}>
                 <Copy size={13} /> <span className="hidden sm:inline">Copy</span>
               </Button>
+              {/* Say what this approval can be taken back by: ⌘Z for a couple of minutes, or nothing. */}
               {draft.final ? (
-                <p id="approve-effect" data-approve-effect className="basis-full text-[12.5px] text-ink-3">
+                <p id="approve-effect" data-approve-effect="final" className="basis-full text-[12.5px] text-ink-3">
                   {draft.final.note} &middot; can&rsquo;t be undone
+                </p>
+              ) : draft.undoable ? (
+                <p data-approve-effect="undoable" className="basis-full text-[12.5px] text-ink-3">
+                  Changed your mind? <Kbd>⌘Z</Kbd> undoes it for 2 minutes
                 </p>
               ) : null}
             </div>

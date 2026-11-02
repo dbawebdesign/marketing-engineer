@@ -3,11 +3,12 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { LoaderCircle, Plus, Upload, X } from "lucide-react";
-import { addSignalsAction, importCsvAction, runAgentAction } from "@/app/(app)/actions";
-import { pulseOfferAction } from "@/app/(app)/actions-signals";
+import { importCsvAction, runAgentAction } from "@/app/(app)/actions";
+import { addNotesAction, pulseOfferAction } from "@/app/(app)/actions-signals";
 import { Button, Input, Label, Textarea, buttonClass, cx, plural } from "./ui";
 import { toast } from "./toast";
 import { inferAccount } from "@/lib/infer-account";
+import { inferSource } from "@/lib/infer-source";
 
 const SOURCES: [string, string][] = [
   ["sales_call", "Sales call"],
@@ -20,6 +21,11 @@ const SOURCES: [string, string][] = [
   ["survey", "Survey"],
   ["other", "Other"],
 ];
+
+const LABEL = new Map(SOURCES);
+/** Notes keep their edits while the paste around them changes. */
+const noteKey = (n: string) => n.trim().slice(0, 120);
+type Override = { source?: string; account?: string };
 
 /** Minimal RFC 4180 CSV parser (quoted fields, escaped quotes, CRLF). */
 function parseCsv(text: string): string[][] {
@@ -52,8 +58,8 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
   const [source, setSource] = useState("sales_call");
   const [content, setContent] = useState("");
   const [account, setAccount] = useState("");
-  // The account guessed from the note ("Call with Polar Mechanical: …"); typing your own wins.
-  const [guessed, setGuessed] = useState<string | null>(null);
+  // Per-note edits to the guessed source/account, keyed by the note's opening text.
+  const [overrides, setOverrides] = useState<Record<string, Override>>({});
   const [split, setSplit] = useState(true);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -86,7 +92,22 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
       back?.focus();
     };
   }, [open]);
-  const count = split ? content.split(/\n\s*\n+/).filter((c) => c.trim()).length : content.trim() ? 1 : 0;
+  const texts = (split ? content.split(/\n\s*\n+/) : [content]).map((c) => c.trim()).filter(Boolean);
+  const count = texts.length;
+  // Each note gets its own source and account: your edit, else what the note says, else the defaults above.
+  const notes = texts.map((text) => {
+    const o = overrides[noteKey(text)] ?? {};
+    const gSource = inferSource(text);
+    const gAccount = inferAccount(text);
+    return {
+      key: noteKey(text),
+      text,
+      source: o.source ?? gSource ?? source,
+      account: o.account ?? gAccount ?? account.trim(),
+      guessed: { source: !o.source && !!gSource, account: o.account === undefined && !!gAccount },
+    };
+  });
+  const setNote = (key: string, patch: Override) => setOverrides((m) => ({ ...m, [key]: { ...m[key], ...patch } }));
 
   /** Close, say what happened, and offer the run the new signals make possible. */
   const done = async (r: { inserted: number; duplicates: number }) => {
@@ -95,7 +116,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
       : r.duplicates ? `${plural(r.duplicates, "signal")} already here` : "Nothing new to add";
     setContent("");
     setAccount("");
-    setGuessed(null);
+    setOverrides({});
     setOpen(false);
     router.refresh();
     const offer = r.inserted ? await pulseOfferAction().catch(() => null) : null;
@@ -166,7 +187,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
         </div>
         <div className="flex-1 space-y-5 overflow-y-auto px-6 py-5">
           <div>
-            <Label>Where is this from?</Label>
+            <Label hint={count > 1 ? "for notes that don't say" : undefined}>{count > 1 ? "Default source" : "Where is this from?"}</Label>
             <div className="flex flex-wrap gap-1.5">
               {SOURCES.map(([v, l]) => (
                 <button
@@ -184,19 +205,8 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             <Label hint={split && count > 1 ? plural(count, "note") : undefined}>Paste notes</Label>
             <Textarea
               value={content}
-              onChange={(e) => {
-                const v = e.target.value;
-                setContent(v);
-                if (!account.trim() || account === guessed) {
-                  // One account field covers every note: only fill it when all notes name the same one.
-                  const notes = (split ? v.split(/\n\s*\n+/) : [v]).filter((c) => c.trim());
-                  const all = notes.map(inferAccount);
-                  const g = all.length && all.every((x) => x && x === all[0]) ? all[0]! : null;
-                  setGuessed(g);
-                  setAccount(g ?? "");
-                }
-              }}
-              rows={12}
+              onChange={(e) => setContent(e.target.value)}
+              rows={count > 1 ? 7 : 12}
               autoFocus
               placeholder={"Paste call summaries, tickets, reviews…\n\nSeparate notes with a blank line to add many at once."}
             />
@@ -206,9 +216,41 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             Each paragraph is a separate note
           </label>
           <label className="block">
-            <Label hint={guessed && account === guessed ? "from your note" : "optional"}>Account</Label>
+            <Label hint={count > 1 ? "for notes that don't name one" : "optional"}>{count > 1 ? "Default account" : "Account"}</Label>
             <Input value={account} onChange={(e) => setAccount(e.target.value)} placeholder="e.g. Polar Mechanical" />
           </label>
+          {count ? (
+            <div>
+              <Label hint="read from each note · change any before adding">{count > 1 ? `${plural(count, "note")} to add` : "Note to add"}</Label>
+              <ul className="divide-y divide-line overflow-hidden rounded-xl ring-1 ring-line" data-testid="note-rows">
+                {notes.map((n, i) => (
+                  <li key={`${i}:${n.key}`} className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
+                    <p className="min-w-0 flex-1 truncate text-[13px] text-ink-2" title={n.text}>{n.text.split("\n")[0]}</p>
+                    <div className="flex shrink-0 items-center gap-1.5">
+                      <select
+                        aria-label={`Source for note ${i + 1}`}
+                        value={n.source}
+                        onChange={(e) => setNote(n.key, { source: e.target.value })}
+                        className={cx("h-7 rounded-full bg-surface pl-2.5 pr-1 text-[12px] ring-1 ring-line-strong", n.guessed.source ? "text-ink" : "text-ink-2")}
+                      >
+                        {SOURCES.map(([v, l]) => (
+                          <option key={v} value={v}>{l}</option>
+                        ))}
+                        {LABEL.has(n.source) ? null : <option value={n.source}>{n.source}</option>}
+                      </select>
+                      <input
+                        aria-label={`Account for note ${i + 1}`}
+                        value={n.account}
+                        onChange={(e) => setNote(n.key, { account: e.target.value })}
+                        placeholder="No account"
+                        className="h-7 w-36 rounded-full bg-surface px-2.5 text-[12px] text-ink ring-1 ring-line-strong placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                      />
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
           <div className="rounded-xl border border-dashed border-line-strong p-4 text-sm text-ink-2">
             <p>
               Have an export? Upload a CSV with a <code className="rounded bg-subtle px-1">content</code> column, plus optional source, title, account, url, occurred_at.
@@ -228,7 +270,7 @@ export function AddSignals({ defaultOpen = false }: { defaultOpen?: boolean }) {
             disabled={pending || !count}
             onClick={() =>
               start(async () => {
-                const r = await addSignalsAction({ source, content, account, split });
+                const r = await addNotesAction(notes.map((n) => ({ source: n.source, content: n.text, account: n.account || null })));
                 if (!r.ok) toast.error(r.error);
                 else if (r.data) await done(r.data);
               })

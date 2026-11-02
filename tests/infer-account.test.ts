@@ -15,3 +15,15 @@ describe("inferAccount", () => {
     expect(inferAccount("")).toBeNull();
   });
 });
+
+describe("inferAccount on labelled notes", () => {
+  it("reads the company after a source label", () => {
+    expect(inferAccount("Support ticket from Northwind Plumbing: invoices fail")).toBe("Northwind Plumbing");
+    expect(inferAccount("Churn reason — Fairway Electric: too expensive")).toBe("Fairway Electric");
+    expect(inferAccount("Cancelled: Summit Roofing, moved to a competitor")).toBe("Summit Roofing");
+  });
+  it("doesn't take the label itself as the account", () => {
+    expect(inferAccount("G2 review — love the reminders")).toBeNull();
+    expect(inferAccount("Churn reason — too expensive")).toBeNull();
+  });
+});

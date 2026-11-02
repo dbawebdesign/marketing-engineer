@@ -6,7 +6,7 @@ import { L } from "@/components/nav";
 import { Markdown } from "@/components/markdown";
 import { DocEditor } from "@/components/doc-editor";
 import { ChipScroller } from "@/components/chip-scroller";
-import { cx, timeAgo } from "@/components/ui";
+import { cx, plural, timeAgo } from "@/components/ui";
 import { creditFor, updatedLine } from "@/lib/doc-credit";
 import { docReceipts } from "@/server/services/doc-receipts";
 import { ReceiptMarkdown } from "@/components/receipt-markdown";
@@ -16,6 +16,11 @@ export const metadata = { title: "Memory" };
 
 /** Folder names follow the system names used everywhere else. */
 const FOLDER: Record<string, string> = { "Content engine": "Founder content", "Outbound engine": "Outbound signals" };
+const KEY_DOCS = [
+  { key: "content/founder-voice", label: "Founder voice" },
+  { key: "outbound/icp", label: "ICP" },
+  { key: "outbound/banned-language", label: "Banned language" },
+];
 const AGENT_WRITTEN = new Set(["customer-truth/what-the-market-is-telling-us", "cockpit/weekly-brief"]);
 
 export default async function MemoryPage({ searchParams }: { searchParams: Promise<{ doc?: string; edit?: string }> }) {
@@ -40,6 +45,8 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
   const isEmpty = (k: string) => !byKey.get(k)?.content.trim();
   const yours = keys.filter((k) => !AGENT_WRITTEN.has(k));
   const emptyCount = yours.filter(isEmpty).length;
+  // Name only the key docs that are actually still empty.
+  const keyEmpty = KEY_DOCS.filter((d) => isEmpty(d.key));
   const hasContent = !!doc?.content.trim();
   const title = doc?.title ?? preset?.title ?? current;
   const canEdit = can(ctx.role, "memory:write");
@@ -54,10 +61,19 @@ export default async function MemoryPage({ searchParams }: { searchParams: Promi
       </header>
       {emptyCount > yours.length / 2 ? (
         <p className="mb-8 rounded-xl bg-subtle px-4 py-3 text-[14px] text-ink-2">
-          {emptyCount} docs are still empty. Agents work better once{" "}
-          <L href="/memory?doc=content%2Ffounder-voice" className="font-medium text-ink underline-offset-2 hover:underline">Founder voice</L>,{" "}
-          <L href="/memory?doc=outbound%2Ficp" className="font-medium text-ink underline-offset-2 hover:underline">ICP</L> and{" "}
-          <L href="/memory?doc=outbound%2Fbanned-language" className="font-medium text-ink underline-offset-2 hover:underline">Banned language</L> are filled in.
+          {plural(emptyCount, "doc")} {emptyCount === 1 ? "is" : "are"} still empty.
+          {keyEmpty.length ? (
+            <>
+              {" "}Agents work better once{" "}
+              {keyEmpty.map((d, i) => (
+                <span key={d.key}>
+                  <L href={`/memory?doc=${encodeURIComponent(d.key)}`} className="font-medium text-ink underline-offset-2 hover:underline">{d.label}</L>
+                  {i < keyEmpty.length - 2 ? ", " : i === keyEmpty.length - 2 ? " and " : ""}
+                </span>
+              ))}{" "}
+              {keyEmpty.length === 1 ? "is" : "are"} filled in.
+            </>
+          ) : null}
         </p>
       ) : null}
       <div className="grid gap-8 lg:grid-cols-[232px_minmax(0,1fr)] lg:gap-10">
