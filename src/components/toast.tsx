@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { CircleCheck, CircleX } from "lucide-react";
+import { cx } from "./ui";
 
 type Action = { label: string; run: () => void };
 /** `key` names what a toast is about: a new toast with the same key replaces the old one. Defaults to the text. */
@@ -45,10 +46,11 @@ export function Toaster() {
     push = (t) => {
       const id = ++n;
       setItems((xs) => {
-        const kept = xs.filter((x) => x.key !== t.key);
+        // Same key, or the very same words, replace rather than stack.
+        const kept = xs.filter((x) => x.key !== t.key && x.text !== t.text);
         const next = [...kept, { ...t, id }];
         const over = next.slice(0, Math.max(next.length - MAX_VISIBLE, 0));
-        clear([...xs.filter((x) => x.key === t.key), ...over]);
+        clear([...xs.filter((x) => x.key === t.key || x.text === t.text), ...over]);
         return next.slice(-MAX_VISIBLE);
       });
       timers.current.set(id, setTimeout(() => dismiss(id), t.duration));
@@ -83,9 +85,9 @@ export function Toaster() {
   return (
     <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-[calc(env(safe-area-inset-bottom)+76px)] z-[60] flex flex-col items-center gap-2 px-4 lg:bottom-5 lg:items-start lg:px-5">
       {items.map((t) => (
-        <div key={t.id} role={t.tone === "error" ? "alert" : "status"} className="animate-in flex max-w-full items-center gap-2 rounded-xl bg-ink py-2 pl-3.5 pr-2 text-sm text-bg shadow-pop">
+        <div key={t.id} role={t.tone === "error" ? "alert" : "status"} className={cx("animate-in flex max-w-[min(520px,100%)] items-center gap-2 rounded-xl bg-ink py-2 pl-3.5 text-sm text-bg shadow-pop", t.action ? "pr-2" : "pr-3.5")}>
           {t.tone === "ok" ? <CircleCheck size={15} className="shrink-0 text-accent" /> : <CircleX size={15} className="shrink-0 text-danger" />}
-          <span className={t.action ? "min-w-0 truncate" : "min-w-0 pr-1.5"}>{t.text}</span>
+          <span className="min-w-0 truncate" title={t.text}>{t.text}</span>
           {t.action ? (
             <button
               type="button"

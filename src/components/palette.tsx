@@ -2,18 +2,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Bot, Check, ChevronRight, Copy, FileText, Inbox, Keyboard, LoaderCircle, MessageSquareQuote, Pencil, Play, Plus, Search, X } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronRight, Copy, Database, FileText, FlaskConical, Inbox, Keyboard, LoaderCircle, MessageSquareQuote, Pencil, Play, Plus, Search, Trash2, X } from "lucide-react";
 import { NAV_ITEMS, useBase } from "./nav";
-import { runAgentAction } from "@/app/(app)/actions";
-import { searchAction } from "@/app/(app)/actions-extra";
+import { clearSampleAction, loadDemoAction, runAgentAction } from "@/app/(app)/actions";
+import { paletteContextAction, searchAction } from "@/app/(app)/actions-extra";
 import type { SearchResults } from "@/server/services/search";
 import { toast } from "./toast";
-import { cx, Kbd } from "./ui";
-import { ShortcutsSheet, draftCommands, openShortcuts, type DraftCommands } from "./shortcuts";
+import { cx, Kbd, plural } from "./ui";
+import { GO_CHORDS, ShortcutsSheet, draftCommands, openShortcuts, type DraftCommands } from "./shortcuts";
 
 type Icon = React.ComponentType<{ size?: number; className?: string }>;
 /** `keepOpen`: choosing it changes the palette (e.g. drills into a sub-list) instead of closing it. */
-type Cmd = { id: string; label: string; hint?: string; icon: Icon; run: () => void; keepOpen?: boolean; chevron?: boolean };
+type Cmd = { id: string; label: string; hint?: string; keys?: string[]; snippet?: string; icon: Icon; run: () => void; keepOpen?: boolean; chevron?: boolean; danger?: boolean };
 type Group = { name: string; items: Cmd[] };
 
 const SOURCE: Record<string, string> = {
@@ -36,13 +36,38 @@ function signalLabel(s: { title: string; content: string }) {
   return line.length > 70 ? line.slice(0, 70).replace(/\s+\S*$/, "") : line;
 }
 
+const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `text` with each case-insensitive occurrence of `term` marked. */
+function Hl({ text, term }: { text: string; term: string }) {
+  if (!term) return <>{text}</>;
+  const parts = text.split(new RegExp(`(${escRe(term)})`, "i"));
+  return (
+    <>
+      {parts.map((p, i) =>
+        i % 2 ? (
+          <mark key={i} className="rounded-[3px] bg-accent/15 px-px text-ink">
+            {p}
+          </mark>
+        ) : (
+          p
+        ),
+      )}
+    </>
+  );
+}
+
+const STATUS: Record<string, string> = { pending: "To review", approved: "Approved", rejected: "Rejected", published: "Published", draft: "Queued", running: "Running", won: "Won", lost: "Lost" };
+
 export function CommandPalette({ agents }: { agents: { id: string; name: string }[] }) {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
   const [i, setI] = useState(0);
   const [res, setRes] = useState<{ q: string; data: SearchResults } | null>(null);
   const [loading, setLoading] = useState(false);
-  const [page, setPage] = useState<"root" | "run">("root");
+  const [page, setPage] = useState<"root" | "run" | "clear">("root");
+  /** Sample-data commands depend on role and on what's loaded; fetched each time the palette opens. */
+  const [ctx, setCtx] = useState<{ canManage: boolean; hasSample: boolean } | null>(null);
   const router = useRouter();
   const base = useBase();
   const input = useRef<HTMLInputElement>(null);
@@ -74,6 +99,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
       setRes(null);
       setPage("root");
       requestAnimationFrame(() => input.current?.focus());
+      void paletteContextAction().then((r) => r.ok && r.data && setCtx(r.data));
       const prev = document.body.style.overflow;
       document.body.style.overflow = "hidden";
       return () => {
@@ -86,7 +112,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
   // Debounced server search; stale responses are dropped.
   const term = q.trim();
   useEffect(() => {
-    if (!open || !term || page === "run") {
+    if (!open || !term || page !== "root") {
       setLoading(false);
       return;
     }
@@ -117,13 +143,37 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
       run: async () => {
         const r = await runAgentAction(a.id);
         if (r.ok) {
-          toast.ok(`${a.name} is working. Drafts land in your inbox.`, { key: `run:${a.id}` });
+          toast.ok(`${a.name} is running · drafts land in your inbox`, { key: `run:${a.id}` });
           router.refresh();
         } else toast.error(r.error);
       },
     });
     if (page === "run") {
       return [{ name: "Run an agent", items: agents.filter((a) => match(a.name)).map((a) => runCmd(a, a.name)) }].filter((g) => g.items.length);
+    }
+    if (page === "clear") {
+      return [
+        {
+          name: "Clear sample data?",
+          items: [
+            {
+              id: "clear:yes",
+              label: "Clear sample data",
+              hint: "Removes sample signals and what was built from them",
+              icon: Trash2,
+              danger: true,
+              run: async () => {
+                const r = await clearSampleAction();
+                if (!r.ok) return void toast.error(r.error, { key: "sample" });
+                const d = r.data!;
+                toast.ok(`Cleared ${plural(d.signals, "sample signal")}${d.drafts ? ` and ${plural(d.drafts, "draft")}` : ""}`, { key: "sample" });
+                router.refresh();
+              },
+            },
+            { id: "clear:no", label: "Keep it", icon: ArrowLeft, keepOpen: true, run: () => { setPage("root"); setQ(""); setI(0); } },
+          ],
+        },
+      ];
     }
     const out: Group[] = [];
     if (draft) {
@@ -143,11 +193,25 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
       ...(agents.length
         ? [{ id: "run", label: "Run an agent…", hint: `${agents.length} agents`, icon: Play, keepOpen: true, chevron: true, run: () => { setPage("run"); setQ(""); setI(0); } }]
         : []),
-      { id: "shortcuts", label: "Keyboard shortcuts", hint: "?", icon: Keyboard, run: () => setTimeout(openShortcuts, 0) },
+      ...(ctx?.canManage && !ctx.hasSample
+        ? [{ id: "sample:load", label: "Load sample data", hint: "Dispatchly, a made-up HVAC company", icon: Database, run: async () => {
+              const r = await loadDemoAction();
+              if (!r.ok) return void toast.error(r.error, { key: "sample" });
+              toast.ok("Loaded sample data from Dispatchly", { key: "sample" });
+              router.refresh();
+            } }]
+        : []),
+      ...(ctx?.canManage && ctx.hasSample
+        ? [{ id: "sample:clear", label: "Clear sample data…", icon: Trash2, keepOpen: true, chevron: true, run: () => { setPage("clear"); setQ(""); setI(0); } }]
+        : []),
+      { id: "shortcuts", label: "Keyboard shortcuts", keys: ["?"], icon: Keyboard, run: () => setTimeout(openShortcuts, 0) },
     ].filter((c) => match(c.label));
     // Typing an agent's name at the top level still finds "Run X" directly.
     if (term) actions.push(...agents.filter((a) => match(`Run ${a.name}`)).map((a) => runCmd(a, `Run ${a.name}`)));
-    const nav: Cmd[] = NAV_ITEMS.filter((n) => match(n.label)).map((n) => ({ id: `nav:${n.href}`, label: n.label, hint: "Go to", icon: n.icon, run: () => go(n.href) }));
+    const nav: Cmd[] = NAV_ITEMS.filter((n) => match(n.label) || (term.length > 2 && match(`Go to ${n.label}`))).map((n) => {
+      const chord = GO_CHORDS.find((c) => c.href === n.href);
+      return { id: `nav:${n.href}`, label: n.label, keys: chord ? ["G", chord.key] : undefined, icon: n.icon, run: () => go(n.href) };
+    });
     const data = term && res ? res.data : null; // keep the last results on screen while the next search runs
     out.push({ name: "Actions", items: actions });
     if (term && data) {
@@ -156,7 +220,8 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
         items: data.drafts.map((d) => ({
           id: `d:${d.id}`,
           label: d.title,
-          hint: d.status === "pending" ? "To review" : d.status,
+          snippet: d.snippet ?? undefined,
+          hint: STATUS[d.status] ?? d.status,
           icon: Inbox,
           run: () => go(`/inbox?${["approved", "rejected"].includes(d.status) ? `tab=${d.status}&` : ""}d=${d.id}`),
         })),
@@ -174,13 +239,17 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
           };
         }),
       });
+      out.push({
+        name: "Experiments",
+        items: data.experiments.map((x) => ({ id: `x:${x.id}`, label: x.name, hint: STATUS[x.status] ?? x.status, icon: FlaskConical, run: () => go("/s/creative") })),
+      });
       out.push({ name: "Docs", items: data.docs.map((d) => ({ id: `m:${d.key}`, label: d.title, hint: d.folder, icon: FileText, run: () => go(`/memory?doc=${encodeURIComponent(d.key)}`) })) });
       nav.push(...data.agents.map((a) => ({ id: `a:${a.id}`, label: a.name, hint: "Agent", icon: Bot, run: () => go(`/agents/${a.id}`) })));
     }
-    out.push({ name: "Navigate", items: nav });
+    out.push({ name: "Go to", items: nav });
     return out.filter((g) => g.items.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agents, term, res, base, page, draft]);
+  }, [agents, term, res, base, page, draft, ctx]);
 
   const flat = groups.flatMap((g) => g.items);
   const sel = Math.min(i, Math.max(flat.length - 1, 0));
@@ -196,7 +265,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
   };
 
   const sheet = <ShortcutsSheet />;
-  if (!open || typeof document === "undefined") return sheet;
+  if (!open || typeof document === "undefined") return <>{sheet}</>;
   let idx = -1;
   const searching = loading && (!res || res.q !== term);
   return (<>{sheet}{createPortal(
@@ -216,14 +285,14 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
         }}
       >
         <div className="flex items-center gap-2.5 border-b border-line px-4">
-          {page === "run" ? (
+          {page !== "root" ? (
             <button
               type="button"
               onClick={() => { setPage("root"); setQ(""); setI(0); input.current?.focus(); }}
               className="-ml-1 flex h-7 shrink-0 items-center gap-1 rounded-md bg-subtle px-2 text-[12.5px] font-medium text-ink-2 hover:text-ink"
               aria-label="Back to all commands"
             >
-              <ArrowLeft size={13} /> Run
+              <ArrowLeft size={13} /> {page === "run" ? "Run" : "Back"}
             </button>
           ) : searching ? <LoaderCircle size={16} className="shrink-0 animate-spin text-ink-3 motion-reduce:animate-none" /> : <Search size={16} className="shrink-0 text-ink-3" />}
           <input
@@ -256,7 +325,7 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
                 choose(flat[sel]);
               }
             }}
-            placeholder={page === "run" ? "Which agent?" : "Search drafts, signals, docs, or run an agent…"}
+            placeholder={page === "run" ? "Which agent?" : page === "clear" ? "Clear the sample data?" : "Search drafts, signals, experiments, or type a command…"}
             style={{ outline: "none", boxShadow: "none" }}
             className="h-12 w-full min-w-0 border-0 bg-transparent text-[15px] text-ink outline-none placeholder:text-ink-3 focus:outline-none focus-visible:outline-none"
           />
@@ -281,11 +350,30 @@ export function CommandPalette({ agents }: { agents: { id: string; name: string 
                       aria-selected={me === sel}
                       onMouseMove={() => me !== sel && setI(me)}
                       onClick={() => choose(c)}
-                      className={cx("flex h-10 cursor-pointer items-center gap-3 rounded-lg px-3 text-sm", me === sel ? "bg-subtle text-ink" : "text-ink-2")}
+                      className={cx(
+                        "flex cursor-pointer items-center gap-3 rounded-lg px-3 text-sm",
+                        c.snippet ? "min-h-10 py-2" : "h-10",
+                        me === sel ? "bg-subtle text-ink" : "text-ink-2",
+                        c.danger && "text-danger",
+                      )}
                     >
-                      <c.icon size={15} className="shrink-0 text-ink-3" />
-                      <span className="min-w-0 flex-1 truncate">{c.label}</span>
-                      {c.hint ? <span className="max-w-[40%] shrink-0 truncate text-xs text-ink-3">{c.hint}</span> : null}
+                      <c.icon size={15} className={cx("shrink-0", c.snippet && "mt-0.5 self-start", c.danger ? "text-danger" : "text-ink-3")} />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{term && !c.id.startsWith("nav:") ? <Hl text={c.label} term={term} /> : c.label}</span>
+                        {c.snippet ? (
+                          <span className="mt-0.5 block truncate text-[12.5px] text-ink-3">
+                            <Hl text={c.snippet} term={term} />
+                          </span>
+                        ) : null}
+                      </span>
+                      {c.hint ? <span className={cx("max-w-[40%] shrink-0 truncate text-xs text-ink-3", c.snippet && "self-start pt-0.5")}>{c.hint}</span> : null}
+                      {c.keys ? (
+                        <span className="flex shrink-0 gap-0.5" aria-label={`Shortcut ${c.keys.join(" then ")}`}>
+                          {c.keys.map((k) => (
+                            <Kbd key={k}>{k}</Kbd>
+                          ))}
+                        </span>
+                      ) : null}
                       {c.chevron ? <ChevronRight size={14} className="-mr-1 shrink-0 text-ink-3" /> : null}
                     </li>
                   );

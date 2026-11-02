@@ -1,7 +1,7 @@
 "use client";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, Check, ChevronDown, Copy, Info, Pencil, X } from "lucide-react";
+import { ArrowUpRight, Check, ChevronDown, Copy, FlaskConical, Info, Pencil, X } from "lucide-react";
 import { reviewAction } from "@/app/(app)/actions";
 import { undoReviewAction } from "@/app/(app)/actions-extra";
 import { Badge, Button, Kbd, Textarea, cx, plural, timeAgo } from "./ui";
@@ -37,6 +37,10 @@ export type ReviewDraft = {
   /** Quiet facts about the draft (platform, account, fit…), shown as one row under the title. */
   meta?: { label: string; value: string }[];
   agent_id: string | null;
+  /** Built from sample data (server-side `is_sample`). */
+  sample?: boolean;
+  /** A social post's platform, for the editor's length guide. */
+  platform?: "x" | "linkedin" | null;
 };
 
 type Receipt = { signal_id: string; quote: string; source?: string; url?: string | null; account?: string | null; occurred_at?: string };
@@ -186,8 +190,12 @@ export function ReviewPane({
         return void toast.error(r.error, { key: "review" });
       }
       emitEmbed(decision === "approve" ? "draft.approved" : "draft.rejected", { id: d.id, title: d.title });
+      // One line, same shape every time: the decision, then what happened because of it.
+      const effect = r.data?.effect?.replace(/\.$/, "");
       const text =
-        decision === "approve" ? (r.data?.effect ?? `Approved. Saved to ${d.system_label}.`) : input.remember ? `Rejected. ${agent} will remember why.` : "Rejected";
+        decision === "approve"
+          ? effect ? `Approved · ${effect}` : `Approved · saved to ${d.system_label}`
+          : input.remember ? `Rejected · ${agent} will remember why` : "Rejected";
       lastDecision = d.undoable ? { id: d.id, at: Date.now(), scope: scopeQuery } : null;
       // Undo when the review can be taken back; otherwise a way to see where the approval went.
       toast.ok(text, {
@@ -286,12 +294,22 @@ export function ReviewPane({
 
   return (
     <article data-review-pane={draft.id}>
-      <header className="mb-6">
-        <p className="text-sm text-ink-3">
-          {draft.system_label} · {draft.agent_name ?? "Agent"} · {timeAgo(draft.created_at)}
+      <header className="mb-5 max-w-[68ch]">
+        <p className="flex flex-wrap items-center gap-x-1.5 text-[13px] text-ink-3">
+          <span className="text-ink-2">{draft.system_label}</span>
+          <span aria-hidden>·</span>
+          <span>{draft.agent_name ?? "Agent"}</span>
+          <span aria-hidden>·</span>
+          <time dateTime={draft.created_at} title={new Date(draft.created_at).toLocaleString()}>{timeAgo(draft.created_at)}</time>
         </p>
-        <h2 className="mt-1 text-xl font-semibold tracking-tight text-pretty">{draft.title}</h2>
-        <DraftMetaRow meta={draft.meta} className="mt-1.5" />
+        <h2 className="mt-1.5 text-[21px] font-semibold leading-snug tracking-[-0.015em] text-pretty">{draft.title}</h2>
+        <DraftMetaRow meta={draft.meta} className="mt-2" />
+        {draft.sample ? (
+          <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3" data-sample-note>
+            <FlaskConical size={13} aria-hidden className="mt-[3px] shrink-0" />
+            <span>Built from sample data — Dispatchly, a made-up HVAC company</span>
+          </p>
+        ) : null}
         {draft.pending_memo_id && editable ? (
           <p className="mt-2 flex items-start gap-1.5 text-[13px] leading-snug text-ink-3">
             <Info size={13} className="mt-[3px] shrink-0" />
@@ -331,11 +349,13 @@ export function ReviewPane({
                 );
               })}
             </div>
-            <span className="hidden text-xs text-ink-3 sm:inline">Markdown works: **bold**, - lists, # headings</span>
+            {draft.platform ? <LengthGuide platform={draft.platform} text={body} /> : <span className="hidden text-xs text-ink-3 sm:inline">Markdown works: **bold**, - lists, # headings</span>}
           </div>
           {preview ? (
             <div className="min-h-[240px] p-5 sm:p-6">
-              <Markdown>{body}</Markdown>
+              <div className="max-w-[68ch]">
+                <Markdown>{body}</Markdown>
+              </div>
             </div>
           ) : (
             <AutoTextarea
@@ -350,14 +370,16 @@ export function ReviewPane({
           )}
         </div>
       ) : (
-        <div className="rounded-xl bg-surface p-5 ring-1 ring-line sm:p-6">{rendered}</div>
+        <div className="rounded-xl bg-surface px-5 py-5 ring-1 ring-line sm:px-7 sm:py-6">
+          <div className="max-w-[68ch]">{rendered}</div>
+        </div>
       )}
 
       {/* Receipts sit with the content, above the sticky bar, so the bar never covers them. */}
       <Receipts list={receipts} onOpen={setSheet} />
 
       {editable ? (
-        <div className="sticky bottom-[calc(57px+env(safe-area-inset-bottom))] md:bottom-0 -mx-1 mt-5 border-t border-line bg-bg/90 px-1 py-4 backdrop-blur">
+        <div data-review-actions className="sticky bottom-[calc(57px+env(safe-area-inset-bottom))] z-10 -mx-1 mt-5 border-t border-line bg-bg/85 px-1 py-3.5 backdrop-blur-md supports-[backdrop-filter]:bg-bg/75 md:bottom-0">
           {confirm ? (
             <div role="alertdialog" aria-label="Discard edits?" data-discard-confirm className="flex flex-wrap items-center gap-2">
               <span className="mr-1 text-[14px] font-medium text-ink">Discard edits?</span>
@@ -474,6 +496,28 @@ export function ReviewPane({
 
       {sheet ? <SignalSheet id={sheet.signal_id} quote={sheet.quote} onClose={() => setSheet(null)} /> : null}
     </article>
+  );
+}
+
+const LIMITS = { x: { max: 280, soft: false, name: "X" }, linkedin: { max: 1300, soft: true, name: "LinkedIn" } } as const;
+
+/** Live length for a social post: X is a hard 280; LinkedIn's ~1,300 is where "see more" cuts in. */
+function LengthGuide({ platform, text }: { platform: "x" | "linkedin"; text: string }) {
+  const { max, soft, name } = LIMITS[platform];
+  const n = [...text.trim()].length;
+  const over = n > max;
+  const near = !over && n > max * 0.9;
+  return (
+    <span
+      data-length-guide
+      aria-live="polite"
+      title={soft ? `${name} shows about ${max.toLocaleString()} characters before “see more”` : `${name} allows ${max} characters`}
+      className={cx("text-xs tnum", over ? (soft ? "font-medium text-warn" : "font-medium text-danger") : near ? "text-warn" : "text-ink-3")}
+    >
+      {n.toLocaleString()} / {soft ? "~" : ""}
+      {max.toLocaleString()}
+      <span className="hidden sm:inline"> {over ? (soft ? "· past “see more”" : "· too long for X") : name}</span>
+    </span>
   );
 }
 

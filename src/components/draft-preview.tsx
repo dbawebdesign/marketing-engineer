@@ -3,7 +3,7 @@ import { useId, useState } from "react";
 import { ArrowRight } from "lucide-react";
 import { L } from "./nav";
 import { Markdown } from "./markdown";
-import { DraftMetaRow } from "./draft-meta";
+import { DraftMetaRow, SampleTag } from "./draft-meta";
 import { Dot, buttonClass, cx, timeAgo } from "./ui";
 
 const LINES = 12;
@@ -32,6 +32,7 @@ export function DraftPreview({
   label = "Waiting for your review",
   meta,
   quiet = false,
+  sample = false,
 }: {
   title: string;
   body: string;
@@ -44,6 +45,8 @@ export function DraftPreview({
   meta?: { label: string; value: string }[];
   /** The page already says it's waiting: no status line, only an optional label. */
   quiet?: boolean;
+  /** Built from sample data: a quiet tag beside the title. */
+  sample?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const id = useId();
@@ -72,6 +75,7 @@ export function DraftPreview({
         )}
         <h3 id={`${id}-t`} className={cx("text-[17px] font-semibold tracking-[-0.01em] text-ink text-pretty", (!quiet || label !== "Waiting for your review") && "mt-2")}>
           {title}
+          {sample ? <SampleTag className="ml-2 align-[2px]" /> : null}
         </h3>
         <DraftMetaRow meta={meta} className="mt-1" />
       </div>

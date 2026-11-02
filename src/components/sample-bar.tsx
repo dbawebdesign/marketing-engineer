@@ -49,12 +49,12 @@ export function SampleBar({ canClear, plan = null }: { canClear: boolean; plan?:
           <>
             <span>You&rsquo;re looking at sample data from Dispatchly, a made-up HVAC software company</span>
             {canClear ? (
-              <>
-                <span aria-hidden className="text-ink-3">·</span>
+              <span className="whitespace-nowrap">
+                <span aria-hidden className="mr-2 text-ink-3">·</span>
                 <button type="button" onClick={() => setConfirming(true)} className={link}>
                   Clear sample data
                 </button>
-              </>
+              </span>
             ) : null}
           </>
         )}

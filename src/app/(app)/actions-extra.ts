@@ -6,12 +6,23 @@ import { firstDraftOfRun, undoReview } from "@/server/services/review-extra";
 import { getSignalDetail } from "@/server/services/signals";
 import { moveExperiment, type ExperimentMove } from "@/server/services/experiments";
 import { isUuid } from "@/lib/db";
+import { canDo } from "@/lib/ctx";
+import { hasSampleData } from "@/server/services/sample";
 import { badRequest } from "@/lib/errors";
 
 export async function searchAction(q: string) {
   return act(async () => {
     const ctx = await requireCtx();
     return searchAll(ctx, typeof q === "string" ? q : "");
+  });
+}
+
+/** What the command palette may offer right now: sample-data commands depend on both. */
+export async function paletteContextAction() {
+  return act(async () => {
+    const ctx = await requireCtx();
+    const canManage = canDo(ctx, "settings:manage");
+    return { canManage, hasSample: canManage ? await hasSampleData(ctx) : false };
   });
 }
 

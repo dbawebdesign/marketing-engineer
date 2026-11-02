@@ -1,8 +1,10 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { Kbd } from "./ui";
+import { useBase } from "./nav";
 
 /** What the command palette can do to the draft open in the inbox right now. */
 export type DraftCommands = { title: string; approve: () => void; edit: () => void; reject: () => void; copy: () => void };
@@ -23,6 +25,44 @@ const isTyping = (el: EventTarget | null) => {
   return t.tagName === "INPUT" && !["checkbox", "radio", "button", "submit", "reset", "range", "color", "file"].includes((t as HTMLInputElement).type);
 };
 
+/** G, then a letter: jump to a page. Shown in the palette and the shortcuts sheet. */
+export const GO_CHORDS: { key: string; href: string; label: string }[] = [
+  { key: "T", href: "/today", label: "Today" },
+  { key: "I", href: "/inbox", label: "Inbox" },
+  { key: "S", href: "/signals", label: "Signals" },
+  { key: "M", href: "/memory", label: "Memory" },
+  { key: "A", href: "/agents", label: "Agents" },
+];
+const CHORD_MS = 1200;
+
+/** G-then-letter navigation, anywhere outside text fields and dialogs. Runs in the capture phase so the second key never reaches page shortcuts (A would approve). */
+function useGoChords() {
+  const router = useRouter();
+  const base = useBase();
+  useEffect(() => {
+    let armed = 0;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTyping(e.target) || document.querySelector('[aria-modal="true"]')) {
+        armed = 0;
+        return;
+      }
+      const k = e.key.toLowerCase();
+      if (armed && Date.now() - armed < CHORD_MS) {
+        armed = 0;
+        const hit = GO_CHORDS.find((c) => c.key.toLowerCase() === k);
+        if (!hit) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        router.push(base + hit.href);
+        return;
+      }
+      armed = k === "g" && !e.shiftKey ? Date.now() : 0;
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [router, base]);
+}
+
 export const openShortcuts = () => window.dispatchEvent(new Event("me:shortcuts"));
 
 /** `?` anywhere (outside text fields) opens a small sheet of keyboard shortcuts. */
@@ -30,6 +70,7 @@ export function ShortcutsSheet() {
   const [open, setOpen] = useState(false);
   const [mod, setMod] = useState("⌘");
   const panel = useRef<HTMLDivElement>(null);
+  useGoChords();
 
   useEffect(() => {
     if (!/Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent)) setMod("Ctrl");
@@ -78,6 +119,10 @@ export function ShortcutsSheet() {
         [<Kbd key="m">{mod}↵</Kbd>, "Approve edit / confirm reject"],
         [<Kbd key="esc">esc</Kbd>, "Cancel (asks before discarding edits)"],
       ],
+    },
+    {
+      name: "Go to",
+      rows: GO_CHORDS.map((c) => [<><Kbd>G</Kbd><Kbd>{c.key}</Kbd></>, c.label] as [React.ReactNode, string]),
     },
     {
       name: "Anywhere",

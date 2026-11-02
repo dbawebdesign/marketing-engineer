@@ -5,7 +5,7 @@ import { SYSTEM_META, type System } from "@/server/agents/types";
 import { isUuid } from "@/lib/db";
 import { SYSTEM_SLUGS, slugForSystem, type SystemSlug } from "@/lib/systems";
 import { dedupeReceipts } from "@/lib/receipts";
-import { metaOf } from "@/lib/draft-meta";
+import { metaOf, platformOf } from "@/lib/draft-meta";
 import { L } from "@/components/nav";
 import { UndoShortcut, type RecentReason, type ReviewDraft } from "@/components/review-pane";
 import type { Draft } from "@/server/services/drafts";
@@ -15,6 +15,9 @@ import { InboxNextStep } from "./next-step";
 import { InboxView } from "./inbox-view";
 
 export const metadata = { title: "Inbox" };
+
+/** Runs as the HTML parses; InboxView drains `__inboxKeys` and removes the listener once hydrated. */
+const KEY_BUFFER = `(function(){if(window.__inboxHydrated)return;var q=window.__inboxKeys=[];function h(e){if(window.__inboxHydrated)return;var t=e.target,n=t&&t.tagName;if(e.metaKey||e.ctrlKey||e.altKey||n==="INPUT"||n==="TEXTAREA"||n==="SELECT"||(t&&t.isContentEditable))return;var k=(e.key||"").toLowerCase();if(k==="j"||k==="k"){q.push(k);e.preventDefault();}}window.__inboxKeyHandler=h;window.addEventListener("keydown",h);})();`;
 
 const TABS = [
   { key: "pending", label: "To review" },
@@ -57,6 +60,8 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
     pending_memo_id: memo && d.status === "pending" && d.system !== "customer_truth" && new Date(d.created_at) >= new Date(memo.created_at) ? memo.id : null,
     evidence: d.evidence ?? [],
     meta: metaOf(d.payload),
+    sample: !!d.is_sample,
+    platform: platformOf(d.payload),
   });
   const empty = !drafts.length && !selected;
   // A filtered queue can be empty while other systems still wait.
@@ -105,6 +110,9 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
           )}
         </>
       ) : (
+        <>
+        {/* J/K pressed before hydration: queue them for the list to replay on mount. */}
+        <script dangerouslySetInnerHTML={{ __html: KEY_BUFFER }} />
         <InboxView
           header={header}
           drafts={all.map(toPane)}
@@ -122,8 +130,10 @@ export default async function InboxPage({ searchParams }: { searchParams: Promis
             systemHref: `/s/${slugForSystem(d.system)}`,
             created_at: d.created_at,
             receipts: dedupeReceipts(d.evidence ?? []).length,
+            sample: !!d.is_sample,
           }))}
         />
+        </>
       )}
     </div>
   );

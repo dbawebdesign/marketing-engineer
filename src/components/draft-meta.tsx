@@ -13,3 +13,16 @@ export function DraftMetaRow({ meta, className }: { meta?: { label: string; valu
     </p>
   );
 }
+
+/** Marks a draft built from sample data. Deliberately quiet: a hairline pill in the faintest ink. */
+export function SampleTag({ className }: { className?: string }) {
+  return (
+    <span
+      data-sample-tag
+      title="Built from sample data: Dispatchly, a made-up HVAC company"
+      className={cx("inline-flex h-[17px] items-center rounded px-1.5 text-[11px] font-medium leading-none text-ink-3 ring-1 ring-inset ring-line-strong", className)}
+    >
+      Sample
+    </span>
+  );
+}

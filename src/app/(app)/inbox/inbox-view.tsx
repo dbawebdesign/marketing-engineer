@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ArrowLeft } from "lucide-react";
 import { L, useBase } from "@/components/nav";
@@ -44,6 +44,11 @@ export function InboxView({
   const [sel, setSel] = useState<string | null>(initialId);
   /** Decided here, not yet gone from the server's list. */
   const [removed, setRemoved] = useState<Set<string>>(() => new Set());
+  /** Decided rows still on screen while they animate out (render only; navigation skips them). */
+  const [leaving, setLeaving] = useState<Set<string>>(() => new Set());
+  /** The next pane fades in: set by a decision, not by J/K, which stay instant. */
+  const fadeNext = useRef(false);
+  const paneWrap = useRef<HTMLDivElement>(null);
   /** A draft whose decision failed, and the state to bring it back in. */
   const [restored, setRestored] = useState<{ id: string; snap: PaneSnapshot } | null>(null);
   const api = useRef<PaneApi | null>(null);
@@ -52,6 +57,7 @@ export function InboxView({
 
   const byId = useMemo(() => new Map(drafts.map((d) => [d.id, d])), [drafts]);
   const visibleRows = useMemo(() => rows.filter((r) => !removed.has(r.id)), [rows, removed]);
+  const shownRows = useMemo(() => rows.filter((r) => !removed.has(r.id) || leaving.has(r.id)), [rows, removed, leaving]);
   const ids = useMemo(() => visibleRows.map((r) => r.id), [visibleRows]);
   const current = (sel && byId.get(sel) && !removed.has(sel) ? byId.get(sel) : byId.get(ids[0] ?? "")) ?? null;
 
@@ -126,6 +132,30 @@ export function InboxView({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Replay J/K pressed while the page was still hydrating (queued by the inline script in page.tsx).
+  useEffect(() => {
+    const w = window as Window & { __inboxHydrated?: boolean; __inboxKeys?: string[]; __inboxKeyHandler?: (e: KeyboardEvent) => void };
+    w.__inboxHydrated = true;
+    if (w.__inboxKeyHandler) window.removeEventListener("keydown", w.__inboxKeyHandler);
+    const queued = w.__inboxKeys ?? [];
+    w.__inboxKeys = [];
+    if (!queued.length) return;
+    const { ids, current, select } = keyState.current;
+    let i = current ? ids.indexOf(current.id) : -1;
+    for (const k of queued) i = k === "j" ? Math.min(i + 1, ids.length - 1) : Math.max(i - 1, 0);
+    const target = ids[i];
+    if (target && target !== current?.id) select(target);
+  }, []);
+
+  // After a decision the next draft fades in over 150ms; J/K swaps stay instant.
+  useLayoutEffect(() => {
+    if (!fadeNext.current) return;
+    fadeNext.current = false;
+    const el = paneWrap.current;
+    if (!el || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    el.animate([{ opacity: 0.25 }, { opacity: 1 }], { duration: 150, easing: "ease-out" });
+  }, [current?.id]);
+
   useEffect(() => {
     if (current) document.querySelector(`[data-draft="${current.id}"]`)?.scrollIntoView({ block: "nearest" });
   }, [current]);
@@ -157,7 +187,16 @@ export function InboxView({
     const i = ids.indexOf(current.id);
     const next = ids[i + 1] ?? (i > 0 ? ids[i - 1] : undefined);
     if (!next) return false;
-    setRemoved((prev) => new Set(prev).add(current.id));
+    const gone = current.id;
+    setRemoved((prev) => new Set(prev).add(gone));
+    setLeaving((prev) => new Set(prev).add(gone));
+    setTimeout(() => setLeaving((prev) => {
+      if (!prev.has(gone)) return prev;
+      const n = new Set(prev);
+      n.delete(gone);
+      return n;
+    }), 180);
+    fadeNext.current = true;
     select(next);
     return true;
   }, [select]);
@@ -193,9 +232,9 @@ export function InboxView({
       <div className={cx(showDraft && "hidden lg:block")}>{header}</div>
       <div className="grid gap-8 lg:grid-cols-[300px_minmax(0,1fr)]">
         <div className={cx("min-w-0", showDraft && "hidden lg:block")}>
-          <InboxList tab={tab} listQuery={listQuery} filter={filter} selectedId={current?.id ?? null} rows={visibleRows} onOpen={open} />
+          <InboxList tab={tab} listQuery={listQuery} filter={filter} selectedId={current?.id ?? null} rows={shownRows} leaving={leaving} onOpen={open} />
         </div>
-        <div className={cx("min-w-0", !showDraft && "hidden lg:block")}>
+        <div ref={paneWrap} className={cx("min-w-0", !showDraft && "hidden lg:block")}>
           <L href={backHref} className="mb-4 inline-flex items-center gap-1 text-sm text-ink-3 hover:text-ink lg:hidden">
             <ArrowLeft size={14} /> All drafts
           </L>

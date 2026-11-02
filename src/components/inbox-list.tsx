@@ -4,8 +4,9 @@ import { X } from "lucide-react";
 import { L, NAV_ITEMS } from "./nav";
 import { Kbd, cx, plural, timeAgo } from "./ui";
 import { openShortcuts } from "./shortcuts";
+import { SampleTag } from "./draft-meta";
 
-export type InboxRow = { id: string; title: string; system: string; systemShort: string; systemHref: string; created_at: string; receipts: number };
+export type InboxRow = { id: string; title: string; system: string; systemShort: string; systemHref: string; created_at: string; receipts: number; sample?: boolean };
 
 const SEEN_KEY = "me:seen-drafts";
 const readSeen = (): Set<string> => {
@@ -34,8 +35,11 @@ export function InboxList({
   listQuery,
   filter,
   onOpen,
+  leaving,
 }: {
   rows: InboxRow[];
+  /** Rows on their way out after a decision: shown collapsing, not counted. */
+  leaving?: Set<string>;
   /** Open a draft in place (no navigation). Modified clicks still open the link. */
   onOpen?: (id: string) => void;
   selectedId: string | null;
@@ -56,7 +60,10 @@ export function InboxList({
     setSeen(new Set(s));
   }, [selectedId]);
 
-  const unread = tab === "pending" && seen ? rows.filter((r) => !seen.has(r.id)).length : 0;
+  const live = leaving?.size ? rows.filter((r) => !leaving.has(r.id)) : rows;
+  // One tag per row only when sample and real drafts mix; an all-sample queue says it once, in the header.
+  const allSample = live.length > 0 && live.every((r) => r.sample);
+  const unread = tab === "pending" && seen ? live.filter((r) => !seen.has(r.id)).length : 0;
   return (
     <div className="lg:sticky lg:top-6 lg:flex lg:max-h-[calc(100dvh-3rem)] lg:flex-col">
       {filter ? (
@@ -73,20 +80,24 @@ export function InboxList({
         </div>
       ) : null}
       <div className="mb-2 flex h-6 items-center justify-between gap-3 px-3.5 text-xs text-ink-3">
-        <span className="truncate tnum" title={unread ? `${unread} not opened yet` : undefined}>
-          {tab === "pending" ? `${rows.length} to review` : plural(rows.length, "draft")}
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="shrink-0 whitespace-nowrap tnum" title={unread ? `${unread} not opened yet` : undefined}>
+            {tab === "pending" ? `${live.length} to review` : plural(live.length, "draft")}
+          </span>
+          {allSample ? <SampleTag /> : null}
         </span>
-        {rows.length > 1 ? (
+        {live.length > 1 ? (
           <button type="button" onClick={openShortcuts} className="hidden shrink-0 items-center gap-1 whitespace-nowrap hover:text-ink-2 lg:inline-flex" aria-label="Keyboard shortcuts">
             <Kbd>J</Kbd>
-            <Kbd>K</Kbd> to move · <Kbd>?</Kbd> shortcuts
+            <Kbd>K</Kbd> {allSample ? "" : "to move "}· <Kbd>?</Kbd> shortcuts
           </button>
         ) : null}
       </div>
       <ul className="space-y-0.5 lg:min-h-0 lg:flex-1 lg:overflow-y-auto">
         {rows.map((d) => {
           const on = d.id === selectedId;
-          return <Row key={d.id} d={d} on={on} isNew={tab === "pending" && !!seen && !on && !seen.has(d.id)} href={`/inbox?${listQuery}d=${d.id}`} onOpen={onOpen} />;
+          const out = !!leaving?.has(d.id);
+          return <Row key={d.id} d={d} on={on && !out} out={out} isNew={tab === "pending" && !!seen && !on && !out && !seen.has(d.id)} tagSample={!allSample && !!d.sample} href={`/inbox?${listQuery}d=${d.id}`} onOpen={onOpen} />;
         })}
       </ul>
     </div>
@@ -94,11 +105,20 @@ export function InboxList({
 }
 
 /** One row. Memoized so moving the selection re-renders two rows, not the whole list. */
-const Row = memo(function Row({ d, on, isNew, href, onOpen }: { d: InboxRow; on: boolean; isNew: boolean; href: string; onOpen?: (id: string) => void }) {
+const Row = memo(function Row({ d, on, out, isNew, tagSample, href, onOpen }: { d: InboxRow; on: boolean; out: boolean; isNew: boolean; tagSample: boolean; href: string; onOpen?: (id: string) => void }) {
   const Icon = iconFor(d.systemHref);
   return (
-    <li data-draft={d.id}>
+    <li
+      data-draft={out ? undefined : d.id}
+      aria-hidden={out || undefined}
+      className={cx(
+        "grid transition-[grid-template-rows,opacity] duration-150 ease-out motion-reduce:transition-none",
+        out ? "pointer-events-none grid-rows-[0fr] opacity-0" : "grid-rows-[1fr]",
+      )}
+    >
+      <div className={cx("min-h-0", out && "overflow-hidden")}>
       <L
+        tabIndex={out ? -1 : undefined}
         href={href}
         scroll={false}
         prefetch={false}
@@ -115,13 +135,17 @@ const Row = memo(function Row({ d, on, isNew, href, onOpen }: { d: InboxRow; on:
         </span>
         <span className="min-w-0 flex-1">
           <span className={cx("line-clamp-2 text-[14px] leading-snug", "text-ink", (isNew || on) && "font-medium")}>{d.title}</span>
-          <span className="mt-1 block text-xs text-ink-3">
-            {d.systemShort} · {timeAgo(d.created_at)}
-            {d.receipts ? ` · ${plural(d.receipts, "receipt")}` : ""}
+          <span className="mt-1 flex flex-wrap items-center gap-x-1 text-xs text-ink-3">
+            <span>
+              {d.systemShort} · {timeAgo(d.created_at)}
+              {d.receipts ? ` · ${plural(d.receipts, "receipt")}` : ""}
+            </span>
+            {tagSample ? <SampleTag className="ml-1" /> : null}
           </span>
         </span>
         {isNew ? <span aria-label="New" className="mt-2 size-1.5 shrink-0 rounded-full bg-accent" /> : null}
       </L>
+      </div>
     </li>
   );
 });
