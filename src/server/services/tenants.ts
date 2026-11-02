@@ -116,3 +116,13 @@ export async function updateTenant(ctx: Ctx, raw: unknown) {
     .parse(raw);
   await sys(`update tenants set name = coalesce($2, name), allowed_origins = coalesce($3, allowed_origins) where id = $1`, [ctx.tenantId, u.name ?? null, u.allowed_origins ?? null]);
 }
+
+export async function listMembers(ctx: Ctx) {
+  assertCan(ctx, "read");
+  const r = await sys<{ id: string; name: string; email: string; role: string; external: boolean; created_at: string }>(
+    `select u.id, u.name, u.email, m.role, (u.external_ref is not null) external, m.created_at
+       from memberships m join users u on u.id = m.user_id where m.tenant_id = $1 order by m.created_at`,
+    [ctx.tenantId],
+  );
+  return r.rows;
+}
