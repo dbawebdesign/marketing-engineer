@@ -101,7 +101,7 @@ function offline(rc: RunContext): Out {
 
 function md(o: Out, dropped: number) {
   const ev = (e: { quote: string; source?: string; account?: string | null }[]) =>
-    e.map((x) => `  > "${x.quote}" (${[x.source?.replace(/_/g, " "), x.account].filter(Boolean).join(", ")})`).join("\n");
+    e.map((x) => `  > "${x.quote}" (${[x.source?.replace(/_/g, " "), x.account].filter(Boolean).join(", ")})`).join("\n  >\n");
   return `# What the market is telling us
 
 **${o.headline}**

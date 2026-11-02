@@ -17,7 +17,7 @@ export function tokens(text: string): string[] {
     .replace(/[^a-z0-9' ]+/g, " ")
     .split(/\s+/)
     .filter((w) => (w.length > 2 || w === "up") && !STOP.has(w))
-    .map((w) => (w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
+    .map((w) => (w.length > 4 && w.endsWith("ies") ? w.slice(0, -3) + "y" : w.length > 4 && w.endsWith("s") && !w.endsWith("ss") ? w.slice(0, -1) : w));
 }
 
 /** Top n-grams (2-3 words) by document frequency. */
@@ -40,7 +40,8 @@ export function topPhrases(docs: string[], n = 12, minDocs = 2): { phrase: strin
   const ranked = [...df.entries()].filter(([, c]) => c >= minDocs).sort((a, b) => b[1] - a[1] || b[0].length - a[0].length);
   const out: { phrase: string; docs: number }[] = [];
   for (const [phrase, c] of ranked) {
-    if (out.some((o) => o.phrase.includes(phrase) || phrase.includes(o.phrase))) continue;
+    const words = phrase.split(" ");
+    if (out.some((o) => o.phrase.includes(phrase) || phrase.includes(o.phrase) || (o.docs >= c && o.phrase.split(" ").some((w) => words.includes(w))))) continue;
     out.push({ phrase, docs: c });
     if (out.length >= n) break;
   }
