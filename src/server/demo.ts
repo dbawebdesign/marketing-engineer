@@ -4,7 +4,6 @@ import { assertCan } from "@/lib/ctx";
 import { ingestSignals, type SignalInputT } from "./services/signals";
 import { writeDocTx } from "./services/memory";
 import { audit } from "./services/audit";
-import { SAMPLE_TAG } from "./services/sample";
 
 /**
  * Sample data: a vertical SaaS company ("Dispatchly") selling field-service software to
@@ -125,9 +124,11 @@ export async function loadDemo(ctx: Ctx, opts: { docs?: boolean } = {}) {
   assertCan(ctx, "settings:manage");
   const res = await ingestSignals(
     ctx,
-    DEMO_SIGNALS.map((s) => ({ ...s, metadata: { ...(s.metadata ?? {}), ...SAMPLE_TAG } })),
+    DEMO_SIGNALS.map((s) => ({ ...s, metadata: s.metadata ?? {} })),
   );
   await withTenant(ctx.tenantId, async (tx) => {
+    // Only rows this load created are sample (a duplicate of a real signal stays real).
+    if (res.ids.length) await tx.query(`update signals set is_sample = true where id = any($1::uuid[])`, [res.ids]);
     if (opts.docs) {
       for (const [key, content] of Object.entries(DEMO_DOCS)) {
         const cur = await tx.query<{ content: string }>(`select content from memory_docs where key = $1`, [key]);
@@ -145,8 +146,8 @@ export async function loadDemo(ctx: Ctx, opts: { docs?: boolean } = {}) {
       for (const a of angles) {
         for (const [kind, n] of [["click", a.clicks], ["demo_request", a.demos], ["qualified_reply", a.replies]] as const) {
           for (let i = 0; i < n; i++) {
-            await tx.query(`insert into metric_events(tenant_id, kind, angle, source, occurred_at, metadata) values ($1,$2,$3,'sample', now() - make_interval(hours => $4), $5)`, [
-              ctx.tenantId, kind, a.angle, Math.floor(Math.random() * 13 * 24), SAMPLE_TAG,
+            await tx.query(`insert into metric_events(tenant_id, kind, angle, source, occurred_at, is_sample) values ($1,$2,$3,'sample', now() - make_interval(hours => $4), true)`, [
+              ctx.tenantId, kind, a.angle, Math.floor(Math.random() * 13 * 24),
             ]);
           }
         }

@@ -4,10 +4,18 @@ import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { clearSampleAction } from "@/app/(app)/actions";
 import { plural } from "./ui";
+import type { SampleClearPlan } from "@/server/services/sample";
 import { toast } from "./toast";
 
 /** Quiet, persistent reminder that some of what's on screen is sample data, with the way out. */
-export function SampleBar({ canClear }: { canClear: boolean }) {
+function describe(p: SampleClearPlan | null) {
+  if (!p) return "Delete the sample signals and metrics, and everything built from them?";
+  const parts = [plural(p.signals, "sample signal"), p.metricEvents ? plural(p.metricEvents, "sample metric") : null, p.drafts ? plural(p.drafts, "pending draft") : null, p.experiments ? plural(p.experiments, "experiment") : null].filter(Boolean);
+  const docs = p.docs.length ? ` Resets ${p.docs.map((d) => d.title).join(", ")} to before the sample.` : "";
+  return `Removes ${parts.join(", ")}.${docs} Reviewed drafts and the audit log stay.`;
+}
+
+export function SampleBar({ canClear, plan = null }: { canClear: boolean; plan?: SampleClearPlan | null }) {
   const [confirming, setConfirming] = useState(false);
   const [pending, start] = useTransition();
   const router = useRouter();
@@ -26,7 +34,7 @@ export function SampleBar({ canClear }: { canClear: boolean }) {
       <div className="mx-auto flex max-w-[1080px] flex-wrap px-4 sm:px-10 items-center gap-x-2 gap-y-1">
         {confirming ? (
           <>
-            <span>Delete sample signals, sample metrics and pending drafts built from them? Reviewed drafts and the audit log stay.</span>
+            <span>{describe(plan)}</span>
             <span className="flex items-center gap-3">
               <button type="button" onClick={clear} disabled={pending} className={`${link} inline-flex items-center gap-1 text-danger`}>
                 {pending ? <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" aria-hidden /> : null}
@@ -39,7 +47,7 @@ export function SampleBar({ canClear }: { canClear: boolean }) {
           </>
         ) : (
           <>
-            <span>You&rsquo;re looking at sample data</span>
+            <span>You&rsquo;re looking at sample data from Dispatchly, a made-up HVAC software company</span>
             {canClear ? (
               <>
                 <span aria-hidden className="text-ink-3">·</span>

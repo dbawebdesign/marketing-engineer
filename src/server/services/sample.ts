@@ -4,18 +4,14 @@ import { audit } from "./audit";
 import { writeDocTx } from "./memory";
 
 /**
- * Sample data is tagged where it lands, so it can never pass for the workspace's own:
- * signals and metric events carry metadata.sample = true. Drafts are "derived" when
- * their receipts cite a sample signal.
+ * Sample data is marked with server-only `is_sample` columns (migration 010): set when the
+ * sample loads, carried from signals to the runs that read them, to their drafts, to the
+ * experiments those drafts start, and to memory versions written from them. Ingest can
+ * never set it, so clearing the sample can never remove the workspace's own data.
  */
-export const SAMPLE_TAG = { sample: true } as const;
-
-const SAMPLE_SIGNAL = `metadata->>'sample' = 'true'`;
-const SAMPLE_METRIC = `(metadata->>'sample' = 'true' or source = 'sample')`;
-
 export async function hasSampleDataTx(tx: Tx) {
   const r = await tx.query<{ yes: boolean }>(
-    `select exists(select 1 from signals where ${SAMPLE_SIGNAL}) or exists(select 1 from metric_events where ${SAMPLE_METRIC}) as yes`,
+    `select exists(select 1 from signals where is_sample) or exists(select 1 from metric_events where is_sample) as yes`,
   );
   return !!r.rows[0]?.yes;
 }
@@ -25,62 +21,68 @@ export async function hasSampleData(ctx: Ctx) {
   return withTenant(ctx.tenantId, hasSampleDataTx);
 }
 
+/** Mark the newest version of a memory doc as written from sample data. */
+export async function markLatestVersionSampleTx(tx: Tx, key: string) {
+  await tx.query(
+    `update memory_doc_versions v set is_sample = true from memory_docs d
+      where d.key = $1 and v.doc_id = d.id and v.version = d.version`,
+    [key],
+  );
+}
+
+export type SampleClearPlan = { signals: number; metricEvents: number; drafts: number; experiments: number; docs: { key: string; title: string }[] };
+
+async function planTx(tx: Tx): Promise<SampleClearPlan> {
+  const c = await tx.query<{ signals: number; metric_events: number; drafts: number; experiments: number }>(
+    `select (select count(*)::int from signals where is_sample) signals,
+            (select count(*)::int from metric_events where is_sample) metric_events,
+            (select count(*)::int from drafts where is_sample and status = 'pending') drafts,
+            (select count(*)::int from experiments where is_sample) experiments`,
+  );
+  const docs = await tx.query<{ key: string; title: string }>(
+    `select d.key, d.title from memory_docs d join memory_doc_versions v on v.doc_id = d.id and v.version = d.version where v.is_sample order by d.title`,
+  );
+  const x = c.rows[0]!;
+  return { signals: x.signals, metricEvents: x.metric_events, drafts: x.drafts, experiments: x.experiments, docs: docs.rows };
+}
+
+/** What "Clear sample data" will remove, for the confirmation. */
+export async function previewSampleClear(ctx: Ctx) {
+  assertCan(ctx, "read");
+  return withTenant(ctx.tenantId, planTx);
+}
+
 /**
- * Remove sample signals and metric events, plus the pending drafts built from them and
- * any run left with nothing to show. Reviewed drafts stay (they're part of the record),
- * and so does the audit log.
+ * Remove everything that came from the sample: its signals and metric events, pending drafts
+ * built from it, experiments those drafts started, and memory written from it (each such doc
+ * goes back to its last version not written from the sample). Reviewed drafts stay as part of
+ * the record (marked sample), and so does the audit log.
  */
 export async function clearSampleData(ctx: Ctx) {
   assertCan(ctx, "settings:manage");
   return withTenant(ctx.tenantId, async (tx) => {
-    // Derived = cites a sample signal, or came from a run after the sample was loaded and cites
-    // nothing real (every run in that window read the sample).
-    const drafts = await tx.query<{ id: string; run_id: string | null }>(
-      `with loaded as (
-              select min(created_at) at from audit_log
-               where action = 'demo.load'
-                 and created_at > coalesce((select max(created_at) from audit_log where action = 'demo.clear'), '-infinity'::timestamptz)),
-            cited as (
-              select d.id,
-                     bool_or(s.${SAMPLE_SIGNAL}) filter (where s.id is not null) as sample,
-                     bool_or(not coalesce(s.${SAMPLE_SIGNAL}, false)) filter (where s.id is not null) as real
-                from drafts d
-                left join lateral jsonb_array_elements(case when jsonb_typeof(d.evidence) = 'array' then d.evidence else '[]'::jsonb end) e on true
-                left join signals s on s.id::text = e->>'signal_id'
-               where d.status = 'pending'
-               group by d.id)
-       delete from drafts d using cited c
-        where d.id = c.id
-          and (coalesce(c.sample, false)
-               or (not coalesce(c.real, false) and d.created_at >= coalesce((select at from loaded), 'infinity'::timestamptz)))
-        returning d.id, d.run_id`,
-    );
-    // An approved memo built on the sample must not stay as the workspace's truth file or brief:
-    // add an empty version (history keeps the old one).
-    const docs = await tx.query<{ key: string }>(
-      `with loaded as (
-              select min(created_at) at from audit_log
-               where action = 'demo.load'
-                 and created_at > coalesce((select max(created_at) from audit_log where action = 'demo.clear'), '-infinity'::timestamptz))
-       select md.key from memory_docs md
-        where md.key in ('customer-truth/what-the-market-is-telling-us', 'cockpit/weekly-brief')
-          and length(trim(md.content)) > 0
-          and exists (
-            select 1 from memory_doc_versions v join drafts dr on v.note = 'Approved: ' || dr.title
-             where v.doc_id = md.id and v.version = md.version and v.author_kind = 'agent'
-               and dr.type in ('market_memo', 'cockpit_memo') and dr.status in ('approved', 'published')
-               and (dr.created_at >= coalesce((select at from loaded), 'infinity'::timestamptz)
-                    or exists (select 1 from jsonb_array_elements(case when jsonb_typeof(dr.evidence) = 'array' then dr.evidence else '[]'::jsonb end) e
-                                 join signals s on s.id::text = e->>'signal_id' and s.${SAMPLE_SIGNAL})))`,
-    );
-    for (const d of docs.rows) await writeDocTx(tx, ctx, d.key, "", { note: "Cleared sample data", authorKind: "system" });
-    const runIds = [...new Set(drafts.rows.flatMap((d) => (d.run_id ? [d.run_id] : [])))];
-    const runs = runIds.length
-      ? await tx.query(`delete from runs r where r.id = any($1::uuid[]) and r.status in ('succeeded','failed','canceled') and not exists (select 1 from drafts d where d.run_id = r.id)`, [runIds])
-      : { rowCount: 0 };
-    const signals = await tx.query(`delete from signals where ${SAMPLE_SIGNAL}`);
-    const metrics = await tx.query(`delete from metric_events where ${SAMPLE_METRIC}`);
-    const out = { docs: docs.rowCount ?? 0, signals: signals.rowCount ?? 0, metricEvents: metrics.rowCount ?? 0, drafts: drafts.rowCount ?? 0, runs: runs.rowCount ?? 0 };
+    const plan = await planTx(tx);
+    for (const d of plan.docs) {
+      const prev = await tx.query<{ content: string }>(
+        `select v.content from memory_doc_versions v join memory_docs d on d.id = v.doc_id
+          where d.key = $1 and not v.is_sample order by v.version desc limit 1`,
+        [d.key],
+      );
+      await writeDocTx(tx, ctx, d.key, prev.rows[0]?.content ?? "", { note: "Cleared sample data", authorKind: "system" });
+    }
+    const drafts = await tx.query<{ run_id: string | null }>(`delete from drafts where is_sample and status = 'pending' returning run_id`);
+    const experiments = await tx.query(`delete from experiments where is_sample`);
+    const runs = await tx.query(`delete from runs r where r.is_sample and r.status in ('succeeded','failed','canceled') and not exists (select 1 from drafts d where d.run_id = r.id)`);
+    const signals = await tx.query(`delete from signals where is_sample`);
+    const metrics = await tx.query(`delete from metric_events where is_sample`);
+    const out = {
+      docs: plan.docs.length,
+      signals: signals.rowCount ?? 0,
+      metricEvents: metrics.rowCount ?? 0,
+      drafts: drafts.rowCount ?? 0,
+      experiments: experiments.rowCount ?? 0,
+      runs: runs.rowCount ?? 0,
+    };
     await audit(tx, ctx, "demo.clear", undefined, out);
     return out;
   });

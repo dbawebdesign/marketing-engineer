@@ -5,6 +5,7 @@ import { badRequest, notFound } from "@/lib/errors";
 import type { VerifiedEvidence } from "../agents/evidence";
 import { audit } from "./audit";
 import { writeDocTx } from "./memory";
+import { markLatestVersionSampleTx } from "./sample";
 import { addRuleTx } from "./agents";
 
 export type Draft = {
@@ -22,9 +23,10 @@ export type Draft = {
   feedback: string | null;
   reviewed_at: string | null;
   created_at: string;
+  is_sample?: boolean;
 };
 
-const COLS = `d.id, d.run_id, d.agent_id, a.name agent_name, d.system, d.type, d.title, d.body, d.payload, d.evidence, d.status, d.feedback, d.reviewed_at, d.created_at`;
+const COLS = `d.id, d.run_id, d.agent_id, a.name agent_name, d.system, d.type, d.title, d.body, d.payload, d.evidence, d.status, d.feedback, d.reviewed_at, d.created_at, d.is_sample`;
 
 /**
  * Upstream first: the market memo feeds every other system, so a review queue reads
@@ -97,18 +99,20 @@ async function applyApproval(tx: Tx, ctx: Ctx, d: Draft): Promise<string | null>
   switch (d.type) {
     case "market_memo": {
       await writeDocTx(tx, ctx, "customer-truth/what-the-market-is-telling-us", d.body, { note: `Approved: ${d.title}`, authorKind: "agent" });
+      if (d.is_sample) await markLatestVersionSampleTx(tx, "customer-truth/what-the-market-is-telling-us");
       const t = d.payload.recommended_test as { name?: string; hypothesis?: string; channel?: string; metric?: string; angle?: string } | undefined;
       const dupe = t?.name ? await tx.query(`select 1 from experiments where lower(name) = lower($1) and status in ('draft','running')`, [t.name]) : null;
       if (t?.name && !dupe?.rowCount) {
         await tx.query(
-          `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, variants) values ($1,$2,$3,$4,$5,$6,$7)`,
-          [ctx.tenantId, d.id, t.name.slice(0, 200), t.hypothesis ?? "", t.channel ?? "other", t.metric ?? "qualified_reply", JSON.stringify(t.angle ? [{ id: "a", label: t.angle }] : [])],
+          `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, variants, is_sample) values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [ctx.tenantId, d.id, t.name.slice(0, 200), t.hypothesis ?? "", t.channel ?? "other", t.metric ?? "qualified_reply", JSON.stringify(t.angle ? [{ id: "a", label: t.angle }] : []), !!d.is_sample],
         );
       }
       return "Updated the truth file and queued the recommended test.";
     }
     case "cockpit_memo":
       await writeDocTx(tx, ctx, "cockpit/weekly-brief", d.body, { note: `Approved: ${d.title}`, authorKind: "agent" });
+      if (d.is_sample) await markLatestVersionSampleTx(tx, "cockpit/weekly-brief");
       return "Published the weekly brief.";
     case "creative_batch": {
       const variants = (d.payload.variants as { id: string; label: string; content?: string }[] | undefined) ?? [];
@@ -128,8 +132,8 @@ async function applyApproval(tx: Tx, ctx: Ctx, d: Draft): Promise<string | null>
         return `Added ${variants.length} variants to “${queued.name}” and started it.`;
       }
       await tx.query(
-        `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, status, variants, started_at) values ($1,$2,$3,$4,$5,$6,'running',$7, now())`,
-        [ctx.tenantId, d.id, d.title.slice(0, 200), String(d.payload.hypothesis ?? ""), String(d.payload.channel ?? "paid_social"), String(d.payload.metric ?? "demo_request"), JSON.stringify(variants)],
+        `insert into experiments(tenant_id, draft_id, name, hypothesis, channel, metric, status, variants, started_at, is_sample) values ($1,$2,$3,$4,$5,$6,'running',$7, now(), $8)`,
+        [ctx.tenantId, d.id, d.title.slice(0, 200), String(d.payload.hypothesis ?? ""), String(d.payload.channel ?? "paid_social"), String(d.payload.metric ?? "demo_request"), JSON.stringify(variants), !!d.is_sample],
       );
       return "Started an experiment with these variants.";
     }

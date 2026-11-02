@@ -289,7 +289,8 @@ ${ads.map((x, i) => `**${i + 1}. ${x.headline}** _(${x.angle})_  \n${x.primary_t
       drafts: [
         {
           type: "creative_batch",
-          title: draftTitle(body, offerName),
+          // Without a named offer, name the batch after its lead angle rather than "Our main offer".
+          title: draftTitle(body, /^our main offer$/i.test((offerName ?? "").trim()) && angles[0] ? `Hooks: ${angles[0].name}` : offerName),
           body,
           payload: {
             offer: o.offer,

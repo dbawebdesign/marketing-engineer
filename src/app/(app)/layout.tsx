@@ -13,8 +13,8 @@ import { PaletteTrigger } from "@/components/palette-trigger";
 import { EmbedBridge } from "@/components/embed-bridge";
 import { Logo } from "@/components/logo";
 import { SampleBar } from "@/components/sample-bar";
-import { hasSampleData } from "@/server/services/sample";
-import { can } from "@/lib/rbac";
+import { hasSampleData, previewSampleClear } from "@/server/services/sample";
+import { canDo } from "@/lib/ctx";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const ctx = await requireCtx();
@@ -22,7 +22,8 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!session.tenant) redirect("/login");
   const embed = await isEmbed();
   const [tenants, inbox, agents, sample] = await Promise.all([embed ? [] : userTenants(session.userId), pendingCount(ctx), listAgents(ctx), hasSampleData(ctx)]);
-  const sampleBar = sample ? <SampleBar canClear={can(ctx.role, "settings:manage")} /> : null;
+  const canClear = canDo(ctx, "settings:manage");
+  const sampleBar = sample ? <SampleBar canClear={canClear} plan={canClear ? await previewSampleClear(ctx) : null} /> : null;
   const palette = <CommandPalette agents={agents.map((a) => ({ id: a.id, name: a.name }))} />;
 
   if (embed) {

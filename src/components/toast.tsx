@@ -66,8 +66,8 @@ export function Toaster() {
     };
   }, []);
 
-  // ⌘Z / Ctrl+Z runs the newest toast's action (e.g. Undo) while it's on screen.
-  const latest = [...items].reverse().find((t) => t.action);
+  // ⌘Z / Ctrl+Z runs the newest Undo while it's on screen (never another kind of action).
+  const latest = [...items].reverse().find((t) => t.action && /^undo$/i.test(t.action.label));
   useEffect(() => {
     if (!latest?.action) return;
     const onKey = (e: KeyboardEvent) => {

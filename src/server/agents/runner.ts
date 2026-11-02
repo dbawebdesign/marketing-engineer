@@ -13,8 +13,8 @@ async function gather(tx: Tx, agent: AgentRow, tpl: AgentTemplate, input: Record
   const spec = { ...tpl.spec, ...agent.spec };
   const days = Math.min(Math.max(Number(input.lookbackDays ?? spec.lookbackDays) || 7, 1), 365);
   const tenant = await tx.query<{ name: string }>(`select name from tenants limit 1`);
-  const sigQ = await tx.query<SignalLite & { metadata: Record<string, unknown> }>(
-    `select id, source, left(content, 8000) content, title, url, account, occurred_at::text occurred_at, metadata
+  const sigQ = await tx.query<SignalLite & { metadata: Record<string, unknown>; is_sample: boolean }>(
+    `select id, source, left(content, 8000) content, title, url, account, occurred_at::text occurred_at, metadata, is_sample
        from signals
       where signals.occurred_at > now() - make_interval(days => $1)
         and ($2::text[] is null or source = any($2))
@@ -139,21 +139,23 @@ export async function executeRun(tenantId: string, runId: string, opts: { finalA
       data = tpl.offline(rc);
     }
     const result = tpl.finalize(data as never, rc);
+    // Output built on sample signals is sample too (cleared with the sample).
+    const isSample = (rc.signals as { is_sample?: boolean }[]).some((s) => s.is_sample);
     await withTenant(tenantId, async (tx) => {
       // Only a run that is still ours may finish (the reaper may have failed it meanwhile).
       const own = await tx.query(`select 1 from runs where id = $1 and status = 'running' for update`, [runId]);
       if (!own.rowCount) return;
       for (const d of result.drafts) {
         await tx.query(
-          `insert into drafts(tenant_id, run_id, agent_id, system, type, title, body, payload, evidence) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [tenantId, runId, agent.id, agent.system, d.type, d.title.slice(0, 300), d.body, d.payload ?? {}, JSON.stringify(dedupeEvidence(d.evidence))],
+          `insert into drafts(tenant_id, run_id, agent_id, system, type, title, body, payload, evidence, is_sample) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [tenantId, runId, agent.id, agent.system, d.type, d.title.slice(0, 300), d.body, d.payload ?? {}, JSON.stringify(dedupeEvidence(d.evidence)), isSample],
         );
       }
       await tx.query(
         `update runs set status='succeeded', finished_at=now(), summary=$2, model=$3, input_tokens=$4, output_tokens=$5, cost_usd=$6,
-                input = input || jsonb_build_object('stats', $7::jsonb)
+                input = input || jsonb_build_object('stats', $7::jsonb), is_sample = $8
           where id=$1`,
-        [runId, result.summary.slice(0, 1000), usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd, JSON.stringify(result.stats)],
+        [runId, result.summary.slice(0, 1000), usage.model, usage.inputTokens, usage.outputTokens, usage.costUsd, JSON.stringify(result.stats), isSample],
       );
       await audit(tx, { ...ctx, actor: { type: "agent", id: agent.id } }, "run.succeeded", { type: "run", id: runId }, { drafts: result.drafts.length, ...result.stats });
     });

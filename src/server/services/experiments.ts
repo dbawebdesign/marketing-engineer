@@ -4,6 +4,7 @@ import { badRequest, notFound } from "@/lib/errors";
 import { computeResults, fmtScore, verdictLine, type Results, type TaggedEvent } from "@/lib/experiment-results";
 import { audit } from "./audit";
 import { writeDocTx } from "./memory";
+import { markLatestVersionSampleTx } from "./sample";
 
 export type Experiment = {
   id: string;
@@ -20,7 +21,7 @@ export type Experiment = {
   results: Results | null;
 };
 
-const COLS = `id, name, hypothesis, channel, metric, status, variants, created_at, started_at, ended_at`;
+const COLS = `id, name, hypothesis, channel, metric, status, variants, created_at, started_at, ended_at, is_sample`;
 
 /** Metric events in the test's window tagged with one of its angles, or with the test itself. */
 async function eventsFor(tx: Tx, e: Omit<Experiment, "results">): Promise<TaggedEvent[]> {
@@ -29,7 +30,8 @@ async function eventsFor(tx: Tx, e: Omit<Experiment, "results">): Promise<Tagged
   const r = await tx.query<TaggedEvent>(
     `select kind, sum(value)::float as value, angle, variant, experiment_id from metric_events
       where occurred_at >= $2 and ($3::timestamptz is null or occurred_at <= $3)
-        and (experiment_id = $1 or lower(trim(angle)) = any($4::text[]))
+        -- Events tagged with this test win; untagged events count by angle (never another test's).
+        and (experiment_id = $1 or (experiment_id is null and lower(trim(angle)) = any($4::text[])))
       group by kind, angle, variant, experiment_id`,
     [e.id, e.started_at, e.ended_at, angles],
   );
@@ -113,6 +115,7 @@ export async function moveExperiment(ctx: Ctx, id: string, move: ExperimentMove)
         const cur = await tx.query<{ content: string }>(`select content from memory_docs where key = $1`, [WINNING_HOOKS]);
         const prev = (cur.rows[0]?.content ?? "").trimEnd();
         await writeDocTx(tx, ctx, WINNING_HOOKS, `${prev ? `${prev}\n\n` : ""}${winnerSection(e, results)}\n`, { note: `Won: ${e.name}`, authorKind: "user" });
+        if ((e as { is_sample?: boolean }).is_sample) await markLatestVersionSampleTx(tx, WINNING_HOOKS);
       }
     }
     await tx.query(
