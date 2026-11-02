@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { AgentTemplate, RunContext } from "../types";
 import { baseSystem, renderDocs, renderRules, renderSignals, renderSpec } from "../prompting";
 import { keepSupported } from "../evidence";
-import { bestSentence, topPhrases } from "../text";
+import { bestSentence, sentences, tokens, topPhrases } from "../text";
 
 const Ev = z.object({ signal_id: z.string(), quote: z.string() });
 
@@ -35,67 +35,146 @@ const Schema = z.object({
 });
 type Out = z.infer<typeof Schema>;
 
+const SOURCE_WORD: Record<string, string> = {
+  sales_call: "sales calls", support_ticket: "support tickets", churn_note: "churn notes", crm_note: "CRM notes",
+  review: "reviews", social: "social posts", interview: "interviews", product_event: "product events", survey: "surveys", other: "other notes",
+};
+
+/** Map a normalized phrase ("follow up quote") back to how customers actually wrote it ("follow-up quote"). */
+function surface(phrase: string, texts: string[]): string {
+  const words = phrase.split(" ").map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`\\b${words.map((w) => `${w}(?:s|es|ies)?`).join("(?:[\\s-]+[a-z']+){0,2}?[\\s-]+")}\\b`, "i");
+  const counts = new Map<string, number>();
+  for (const t of texts) {
+    const m = t.match(re);
+    if (m) counts.set(m[0].toLowerCase(), (counts.get(m[0].toLowerCase()) ?? 0) + 1);
+  }
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? phrase;
+}
+
+/** Prefer the longer phrase when it carries almost all of the shorter one's mentions. */
+function sharpen(p: { phrase: string; docs: number }, docs: string[]) {
+  const tri = topPhrases(docs, 30, 2).filter((t) => t.phrase.split(" ").length === 3 && t.phrase.includes(p.phrase));
+  const best = tri.sort((a, b) => b.docs - a.docs)[0];
+  return best && best.docs >= Math.ceil(p.docs * 0.6) ? best : p;
+}
+
+const listJoin = (xs: string[]) => (xs.length <= 1 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
+function whyFor(sources: string[]): string {
+  const has = (k: string) => sources.includes(k);
+  if (has("churn_note")) return "It also shows up in churn notes, so it costs customers, not just deals.";
+  if (has("sales_call") && has("support_ticket")) return "It's both a reason to buy and a product gap customers hit later.";
+  if (has("review")) return "Customers repeat it in public reviews: free proof to reuse.";
+  if (has("sales_call")) return "Buyers raise it on calls without being asked.";
+  if (has("social")) return "People say it in public, in their own words.";
+  return "It keeps coming up across sources.";
+}
+
+const OBJECTION = /\b(price|pricing|cost|expensive|cheaper|budget|per-tech|hard to justify|not interested|not urgent|left for|competitor|confusing|buried|took longer|built for bigger|bundles)\b/i;
+
 function offline(rc: RunContext): Out {
   const sigs = rc.signals;
+  const texts = sigs.map((s) => s.content);
   const won = sigs.filter((s) => s.outcome === "won");
-  const phrases = topPhrases(sigs.map((s) => s.content), 10, 2);
-  const changes: Out["changes"] = phrases.slice(0, 5).map((p) => {
-    const hits = sigs.filter((s) => s.content.toLowerCase().includes(p.phrase.split(" ")[0]!) && s.content.toLowerCase().includes(p.phrase.split(" ").at(-1)!));
-    const evidence = hits.slice(0, 3).flatMap((s) => {
-      const q = bestSentence(s.content, p.phrase);
-      return q ? [{ signal_id: s.id, quote: q }] : [];
-    });
-    const sources = [...new Set(hits.map((h) => h.source.replace("_", " ")))].join(", ");
-    return {
-      claim: `"${p.phrase}" came up in ${p.docs} separate signals (${sources}).`,
-      why_it_matters: "Repeated, unprompted language is the cheapest positioning research there is. Test it in copy.",
-      strength: p.docs >= 4 ? "strong" : "emerging",
-      count: p.docs,
-      evidence,
-    };
-  });
-  // Converted vs. not: phrases that show up in won deals but not in lost ones.
-  const calls = sigs.filter((s) => s.outcome === "won" || s.outcome === "lost");
-  const lost = calls.filter((s) => s.outcome === "lost");
+  const lost = sigs.filter((s) => s.outcome === "lost");
+  const quote = (s: { id: string; content: string }, phrase: string) => {
+    const q = bestSentence(s.content, phrase);
+    return q ? [{ signal_id: s.id, quote: q }] : [];
+  };
+  const hitsFor = (phrase: string) => sigs.filter((s) => phrase.split(" ").every((w) => tokens(s.content).includes(w)));
+
+  const changes: Out["changes"] = [];
+  let headline: string | null = null;
+  let winning: string | null = null;
+
+  // 1. What converts vs. what doesn't.
   if (won.length >= 2 && lost.length >= 1) {
-    const wonP = topPhrases(won.map((s) => s.content), 8, 2);
-    const lostText = lost.map((s) => s.content.toLowerCase()).join(" ");
-    const distinct = wonP.find((p) => !p.phrase.split(" ").every((w) => lostText.includes(w)));
+    const lostTokens = new Set(lost.flatMap((s) => tokens(s.content)));
+    const wonP = topPhrases(won.map((s) => s.content), 10, 2).find((p) => !p.phrase.split(" ").every((w) => lostTokens.has(w)));
     const lostP = topPhrases(lost.map((s) => s.content), 4, Math.min(2, lost.length))[0];
-    if (distinct) {
-      const ws = won.filter((s) => s.content.toLowerCase().includes(distinct.phrase.split(" ")[0]!));
-      changes.unshift({
-        claim: `${distinct.docs} of ${won.length} won deals talked about "${distinct.phrase}"; none of the ${lost.length} lost deals did${lostP ? ` (they talked about "${lostP.phrase}")` : ""}.`,
-        why_it_matters: "What converts is not always what buyers open with. Lead with what closes.",
-        strength: distinct.docs >= 3 ? "strong" : "emerging",
-        count: distinct.docs,
-        evidence: ws.slice(0, 3).flatMap((s) => {
-          const q = bestSentence(s.content, distinct.phrase);
-          return q ? [{ signal_id: s.id, quote: q }] : [];
-        }),
+    if (wonP) {
+      const sharp = sharpen(wonP, won.map((s) => s.content));
+      winning = surface(sharp.phrase, won.map((s) => s.content));
+      const lostWords = lostP ? surface(lostP.phrase, lost.map((s) => s.content)) : null;
+      const ws = won.filter((s) => wonP.phrase.split(" ").every((w) => tokens(s.content).includes(w)));
+      headline = lostWords
+        ? `Deals we won talked about ${winning}. Deals we lost talked about ${lostWords}.`
+        : `Deals we won kept coming back to ${winning}.`;
+      changes.push({
+        claim: `${ws.length} of ${won.length} won deals brought up ${winning}; none of the ${lost.length} lost deals did.`,
+        why_it_matters: lostWords ? `Buyers often open with ${lostWords}, but that isn't what closes. Lead with what closes.` : "Lead with what closes.",
+        strength: ws.length >= 3 ? "strong" : "emerging",
+        count: ws.length,
+        evidence: ws.slice(0, 3).flatMap((s) => quote(s, wonP.phrase)),
       });
     }
   }
-  const top = changes[0] && won.length >= 2 ? (topPhrases(won.map((s) => s.content), 8, 2).find((p) => !lost.map((s) => s.content.toLowerCase()).join(" ").includes(p.phrase))?.phrase ?? phrases[0]?.phrase ?? "the most repeated pain") : (phrases[0]?.phrase ?? "the most repeated pain");
+
+  // 2. Repeated, unprompted language across sources.
+  const phrases = topPhrases(texts, 12, 2).map((p) => sharpen(p, texts));
+  const seen = new Set(changes.flatMap((c) => c.claim.toLowerCase().split(/\W+/)));
+  for (const p of phrases) {
+    if (changes.length >= 5) break;
+    const words = surface(p.phrase, texts);
+    if (winning && (winning.includes(words) || words.includes(winning))) continue;
+    if (p.phrase.split(" ").every((w) => seen.has(w))) continue;
+    const hits = hitsFor(p.phrase);
+    if (hits.length < 2) continue;
+    const sources = [...new Set(hits.map((h) => h.source))];
+    changes.push({
+      claim: `“${words}” came up in ${hits.length} separate ${sources.length === 1 ? SOURCE_WORD[sources[0]!] ?? "notes" : "signals"}${sources.length > 1 ? ` across ${listJoin(sources.map((x) => SOURCE_WORD[x] ?? x))}` : ""}.`,
+      why_it_matters: whyFor(sources),
+      strength: hits.length >= 4 ? "strong" : "emerging",
+      count: hits.length,
+      evidence: hits.slice(0, 2).flatMap((s) => quote(s, p.phrase)),
+    });
+  }
+
+  // 3. Objections: sentences from lost deals, churn notes and tickets that push back.
+  const objectionSources = sigs.filter((s) => s.outcome === "lost" || s.source === "churn_note" || s.source === "review" || s.source === "support_ticket");
+  const objections: Out["objections"] = [];
+  for (const s of objectionSources) {
+    const sentence = sentences(s.content).find((x) => OBJECTION.test(x));
+    if (!sentence || objections.length >= 4) continue;
+    const kind = sentence.match(OBJECTION)![0].toLowerCase();
+    const label = /price|pricing|cost|expensive|cheaper|budget|per-tech|justify/.test(kind)
+      ? "Price, especially per-tech pricing for small shops"
+      : /left for|competitor|bundles|cheaper/.test(kind)
+        ? "A competitor offered more in one bundle"
+        : /confusing|buried|took longer/.test(kind)
+          ? "Setup friction: inviting the office team is hard to find"
+          : /built for bigger/.test(kind)
+            ? "Feels built for bigger commercial shops"
+            : "Not urgent enough to switch now";
+    const existing = objections.find((o) => o.objection === label);
+    if (existing) {
+      existing.count++;
+      if (existing.evidence.length < 2) existing.evidence.push({ signal_id: s.id, quote: sentence });
+    } else objections.push({ objection: label, count: 1, evidence: [{ signal_id: s.id, quote: sentence }] });
+  }
+
+  const angle = winning ?? (phrases[0] ? surface(phrases[0].phrase, texts) : null);
   return {
-    headline: changes[0]?.claim ?? "Not enough signal this window to say what changed.",
+    headline: headline ?? (changes[0] ? changes[0].claim : "Not enough signal this window to say what changed."),
     changes,
-    language: phrases.slice(0, 6).map((p) => {
-      const s = sigs.find((x) => x.content.toLowerCase().includes(p.phrase.split(" ")[0]!));
-      const q = s ? bestSentence(s.content, p.phrase) : null;
-      return { phrase: p.phrase, note: `${p.docs} mentions`, evidence: s && q ? [{ signal_id: s.id, quote: q }] : [] };
+    language: phrases.slice(0, 5).map((p) => {
+      const words = surface(p.phrase, texts);
+      const s = hitsFor(p.phrase)[0];
+      return { phrase: words, note: `${p.docs} mentions`, evidence: s ? quote(s, p.phrase) : [] };
     }),
-    objections: [],
-    recommended_test: {
-      name: `Lead with "${top}"`,
-      hypothesis: `If we lead with the buyer's own phrase "${top}", positive reply and demo rates beat our current generic angle.`,
-      angle: `Open with "${top}": the words buyers used before they signed.`,
-      channel: "outbound",
-      metric: "Qualified positive replies",
-      why_this_week: "It is the most repeated phrase in this window's signal.",
-    },
-    confidence_note:
-      "Generated by the offline engine (frequency analysis, no LLM). Connect a Claude API key for judgment-quality synthesis: converted vs. lost comparisons, objections, and sharper angles.",
+    objections,
+    recommended_test: angle
+      ? {
+          name: `Lead with ${angle}`,
+          hypothesis: `Outreach that opens with ${angle}, in the words buyers used, gets more qualified replies than our current opener.`,
+          angle: winning ? `Open with ${angle}: it is what the buyers who signed talked about.` : `Open with ${angle}, in the buyers' own words.`,
+          channel: "outbound",
+          metric: "Qualified positive replies",
+          why_this_week: winning ? "It's what the deals we won had in common." : "It's the most repeated phrase this week.",
+        }
+      : { name: "Collect more signal", hypothesis: "We need more customer notes before testing.", angle: "", channel: "other", metric: "Signals collected", why_this_week: "Too few signals this window." },
+    confidence_note: "Built from frequency and contrast analysis of this week's signals. Connect Claude for deeper synthesis.",
   };
 }
 
@@ -107,7 +186,7 @@ function md(o: Out, dropped: number) {
 **${o.headline}**
 
 ## What changed
-${o.changes.map((c) => `- **${c.claim}** ${c.why_it_matters} _(${c.strength}, ${c.count} signals)_\n${ev(c.evidence as never)}`).join("\n")}
+${o.changes.map((c) => `- **${c.claim}** ${c.why_it_matters}\n${ev((c.evidence as never[]).slice(0, 2) as never)}`).join("\n")}
 
 ## Their words, not ours
 ${o.language.map((l) => `- "${l.phrase}": ${l.note}`).join("\n") || "- Nothing repeated enough yet."}
